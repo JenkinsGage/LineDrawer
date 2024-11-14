@@ -45,6 +45,7 @@ public:
 	int32 AddLine(AdvancedLineDrawer::FLineDescriptor&& LineDescriptor, bool bAutoBuildInterpCurve = true);
 	bool UpdateLine(int32 LineIndex, TFunctionRef<bool(AdvancedLineDrawer::FLineDescriptor& OutLineDescriptor)> Updater);
 	void RemoveLine(int32 LineIndex);
+	void RemoveAllLines();
 
 protected:
 	virtual SWidget& GetLineDrawerWidget() = 0;

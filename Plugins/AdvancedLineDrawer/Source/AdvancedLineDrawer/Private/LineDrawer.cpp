@@ -3,28 +3,22 @@
 
 #include "LineDrawer.h"
 
-#include "SlateOptMacros.h"
-
 FInterpCurve<AdvancedLineDrawer::FCurvePointType> AdvancedLineDrawer::LineBuilder::BuildCubicInterpCurveWithAutoTangents(const FCurvePointType& Start, const FCurvePointType& End)
 {
 	FInterpCurve<FCurvePointType> Curve;
 	auto& P1 = Curve.Points[Curve.AddPoint(0.0f, Start)];
 	P1.LeaveTangent = FCurvePointType(End.X, Start.Y);
-	P1.ArriveTangent = P1.LeaveTangent;
 	P1.InterpMode = CIM_CurveUser;
 	auto& P2 = Curve.Points[Curve.AddPoint(1.0f, End)];
 	P2.ArriveTangent = FCurvePointType(Start.X, End.Y);
-	P2.LeaveTangent = P2.ArriveTangent;
 	P2.InterpMode = CIM_CurveUser;
 
-	Curve.AutoSetTangents(0.1f, true);
+	Curve.AutoSetTangents();
 	return Curve;
 }
 
 void AdvancedLineDrawer::LineBuilder::UpdateRenderData(const FLineDescriptor& LineDescriptor, FRenderData& InOutRenderData, const FGeometry& AllottedGeometry)
 {
-	SCOPED_NAMED_EVENT(LineBuilderUpdateRenderData, FColor::White);
-
 	{
 		uint32 GeometryHash = FCrc::TypeCrc32(AllottedGeometry);
 		uint32 DescriptorHash = FCrc::TypeCrc32(LineDescriptor);
@@ -147,6 +141,12 @@ void ILineDrawer::RemoveLine(int32 LineIndex)
 		LineDatas.RemoveAt(LineIndex);
 		GetLineDrawerWidget().Invalidate(EInvalidateWidgetReason::Paint);
 	}
+}
+
+void ILineDrawer::RemoveAllLines()
+{
+	LineDatas.Empty();
+	GetLineDrawerWidget().Invalidate(EInvalidateWidgetReason::Paint);
 }
 
 void ILineDrawer::AddLineDrawerReferencedObjects(FReferenceCollector& Collector)
