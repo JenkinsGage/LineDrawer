@@ -23,7 +23,7 @@ FString SLineDrawerWidget::GetReferencerName() const
 
 int32 SLineDrawerWidget::OnPaint(const FPaintArgs& Args, const FGeometry& AllottedGeometry, const FSlateRect& MyCullingRect, FSlateWindowElementList& OutDrawElements, int32 LayerId, const FWidgetStyle& InWidgetStyle, bool bParentEnabled) const
 {
-	return DrawLines(OutDrawElements, LayerId);
+	return DrawLines(AllottedGeometry, OutDrawElements, LayerId);
 }
 
 FVector2D SLineDrawerWidget::ComputeDesiredSize(float) const

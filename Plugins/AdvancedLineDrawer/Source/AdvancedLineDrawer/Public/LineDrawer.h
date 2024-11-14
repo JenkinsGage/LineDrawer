@@ -16,6 +16,8 @@ namespace AdvancedLineDrawer
 		float InterpEndT = 1.0f;
 		float Thickness = 8.0f;
 		float Resolution = 32.0f;
+		float DynamicResolutionFactor = 32.0f;
+		float MaxResolution = 256.0f;
 		FSlateBrush Brush;
 		FInterpCurve<FCurvePointType> InterpCurve;
 	};
@@ -25,12 +27,13 @@ namespace AdvancedLineDrawer
 		TArray<FSlateVertex> VertexData;
 		TArray<SlateIndex> IndexData;
 		FSlateResourceHandle RenderingResourceHandle;
+		uint32 DirtyHash = 0;
 	};
 
 	namespace LineBuilder
 	{
 		FInterpCurve<FCurvePointType> BuildCubicInterpCurveWithAutoTangents(const FCurvePointType& Start, const FCurvePointType& End);
-		void UpdateRenderData(const FLineDescriptor& LineDescriptor, FRenderData& OutRenderData);
+		void UpdateRenderData(const FLineDescriptor& LineDescriptor, FRenderData& InOutRenderData, const FGeometry& AllottedGeometry);
 	}
 }
 
@@ -47,12 +50,13 @@ protected:
 	virtual SWidget& GetLineDrawerWidget() = 0;
 
 	void AddLineDrawerReferencedObjects(FReferenceCollector& Collector);
-	int32 DrawLines(FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
+	int32 DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
 
+private:
 	struct FLineData
 	{
 		AdvancedLineDrawer::FLineDescriptor LineDescriptor;
 		AdvancedLineDrawer::FRenderData RenderData;
 	};
-	TSparseArray<FLineData> LineDatas;
+	mutable TSparseArray<FLineData> LineDatas;
 };

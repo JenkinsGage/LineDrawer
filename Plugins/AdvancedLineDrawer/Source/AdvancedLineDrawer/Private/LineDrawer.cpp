@@ -17,18 +17,31 @@ FInterpCurve<AdvancedLineDrawer::FCurvePointType> AdvancedLineDrawer::LineBuilde
 	P2.LeaveTangent = P2.ArriveTangent;
 	P2.InterpMode = CIM_CurveUser;
 
-	Curve.AutoSetTangents(0.5f, false);
+	Curve.AutoSetTangents(0.1f, true);
 	return Curve;
 }
 
-void AdvancedLineDrawer::LineBuilder::UpdateRenderData(const FLineDescriptor& LineDescriptor, FRenderData& OutRenderData)
+void AdvancedLineDrawer::LineBuilder::UpdateRenderData(const FLineDescriptor& LineDescriptor, FRenderData& InOutRenderData, const FGeometry& AllottedGeometry)
 {
 	SCOPED_NAMED_EVENT(LineBuilderUpdateRenderData, FColor::White);
+
+	{
+		uint32 GeometryHash = FCrc::TypeCrc32(AllottedGeometry);
+		uint32 DescriptorHash = FCrc::TypeCrc32(LineDescriptor);
+		uint32 DirtyHash = HashCombineFast(GeometryHash, DescriptorHash);
+		if (DirtyHash == InOutRenderData.DirtyHash)
+		{
+			return;
+		}
+		InOutRenderData.DirtyHash = DirtyHash;
+	}
+
 	const float InterpLengthT = LineDescriptor.InterpEndT - LineDescriptor.InterpStartT;
 	check(LineDescriptor.Resolution > 1.0f && InterpLengthT > 0);
+	const float DynamicResolutionCorr = LineDescriptor.DynamicResolutionFactor / AllottedGeometry.GetLocalSize().SquaredLength();
 
-	OutRenderData.VertexData.Reset();
-	OutRenderData.IndexData.Reset();
+	InOutRenderData.VertexData.Reset();
+	InOutRenderData.IndexData.Reset();
 
 	float EvalT = LineDescriptor.InterpStartT;
 	while (EvalT < LineDescriptor.InterpEndT)
@@ -37,16 +50,16 @@ void AdvancedLineDrawer::LineBuilder::UpdateRenderData(const FLineDescriptor& Li
 
 		const FCurvePointType CurvePoint = LineDescriptor.InterpCurve.Eval(EvalT);
 		const FCurvePointType Tangent = LineDescriptor.InterpCurve.EvalDerivative(EvalT).GetSafeNormal();
-		const FCurvePointType Normal = Tangent.GetRotated(90.0f);
+		const FCurvePointType ScaledNormal = Tangent.GetRotated(90.0f) * LineDescriptor.Thickness;
 		const FCurvePointType SecondDerivative = LineDescriptor.InterpCurve.EvalSecondDerivative(EvalT);
 
-		const FCurvePointType VertexPos1 = CurvePoint + Normal * LineDescriptor.Thickness;
-		const FCurvePointType VertexPos2 = CurvePoint - Normal * LineDescriptor.Thickness;
+		const FCurvePointType VertexPos1 = AllottedGeometry.LocalToAbsolute(CurvePoint + ScaledNormal);
+		const FCurvePointType VertexPos2 = AllottedGeometry.LocalToAbsolute(CurvePoint - ScaledNormal);
 
 		const FColor TintColor = LineDescriptor.Brush.TintColor.GetSpecifiedColor().ToFColor(true);
 		const float CoordinateU = (EvalT - LineDescriptor.InterpStartT) / InterpLengthT;
 		{
-			FSlateVertex& NewVert1 = OutRenderData.VertexData[OutRenderData.VertexData.AddUninitialized()];
+			FSlateVertex& NewVert1 = InOutRenderData.VertexData[InOutRenderData.VertexData.AddUninitialized()];
 			NewVert1.Position[0] = VertexPos1[0];
 			NewVert1.Position[1] = VertexPos1[1];
 			NewVert1.Color = TintColor;
@@ -60,7 +73,7 @@ void AdvancedLineDrawer::LineBuilder::UpdateRenderData(const FLineDescriptor& Li
 		}
 
 		{
-			FSlateVertex& NewVert2 = OutRenderData.VertexData[OutRenderData.VertexData.AddUninitialized()];
+			FSlateVertex& NewVert2 = InOutRenderData.VertexData[InOutRenderData.VertexData.AddUninitialized()];
 			NewVert2.Position[0] = VertexPos2[0];
 			NewVert2.Position[1] = VertexPos2[1];
 			NewVert2.Color = TintColor;
@@ -73,25 +86,26 @@ void AdvancedLineDrawer::LineBuilder::UpdateRenderData(const FLineDescriptor& Li
 			NewVert2.TexCoords[3] = 1.0f;
 		}
 
-		const int32 LastVertexIndex = OutRenderData.VertexData.Num() - 1;
+		const int32 LastVertexIndex = InOutRenderData.VertexData.Num() - 1;
 		if (LastVertexIndex >= 3)
 		{
-			OutRenderData.IndexData.Emplace(LastVertexIndex - 2);
-			OutRenderData.IndexData.Emplace(LastVertexIndex - 1);
-			OutRenderData.IndexData.Emplace(LastVertexIndex);
+			InOutRenderData.IndexData.Emplace(LastVertexIndex - 2);
+			InOutRenderData.IndexData.Emplace(LastVertexIndex - 1);
+			InOutRenderData.IndexData.Emplace(LastVertexIndex);
 
-			OutRenderData.IndexData.Emplace(LastVertexIndex - 3);
-			OutRenderData.IndexData.Emplace(LastVertexIndex - 2);
-			OutRenderData.IndexData.Emplace(LastVertexIndex - 1);
+			InOutRenderData.IndexData.Emplace(LastVertexIndex - 3);
+			InOutRenderData.IndexData.Emplace(LastVertexIndex - 2);
+			InOutRenderData.IndexData.Emplace(LastVertexIndex - 1);
 		}
 
-		const float DynamicResolution = LineDescriptor.Resolution + SecondDerivative.Length() / LineDescriptor.Resolution;
-		EvalT = FMath::Min(EvalT + 1.0f / DynamicResolution, LineDescriptor.InterpEndT);
+		const float DynamicResolution = SecondDerivative.SquaredLength() * DynamicResolutionCorr;
+		const float Resolution = FMath::Min(LineDescriptor.Resolution + DynamicResolution, LineDescriptor.MaxResolution);
+		EvalT = FMath::Min(EvalT + 1.0f / Resolution, LineDescriptor.InterpEndT);
 	}
 
-	if(!OutRenderData.RenderingResourceHandle.IsValid())
+	if(!InOutRenderData.RenderingResourceHandle.IsValid())
 	{
-		OutRenderData.RenderingResourceHandle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(LineDescriptor.Brush);
+		InOutRenderData.RenderingResourceHandle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(LineDescriptor.Brush);
 	}
 }
 
@@ -104,7 +118,7 @@ int32 ILineDrawer::AddLine(AdvancedLineDrawer::FLineDescriptor&& LineDescriptor,
 	{
 		NewLineData.LineDescriptor.InterpCurve = AdvancedLineDrawer::LineBuilder::BuildCubicInterpCurveWithAutoTangents(LineDescriptor.StartPoint, LineDescriptor.EndPoint);
 	}
-	AdvancedLineDrawer::LineBuilder::UpdateRenderData(NewLineData.LineDescriptor, NewLineData.RenderData);
+
 	GetLineDrawerWidget().Invalidate(EInvalidateWidgetReason::Paint);
 
 	return LineDatas.Emplace(MoveTemp(NewLineData));
@@ -120,7 +134,6 @@ bool ILineDrawer::UpdateLine(int32 LineIndex, TFunctionRef<bool(AdvancedLineDraw
 	FLineData& LineData = LineDatas[LineIndex];
 	if (Updater(LineData.LineDescriptor))
 	{
-		AdvancedLineDrawer::LineBuilder::UpdateRenderData(LineData.LineDescriptor, LineData.RenderData);
 		GetLineDrawerWidget().Invalidate(EInvalidateWidgetReason::Paint);
 	}
 
@@ -144,11 +157,12 @@ void ILineDrawer::AddLineDrawerReferencedObjects(FReferenceCollector& Collector)
 	}
 }
 
-int32 ILineDrawer::DrawLines(FSlateWindowElementList& OutDrawElements, int32 LayerId) const
+int32 ILineDrawer::DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const
 {
-	for (const FLineData& LineData : LineDatas)
+	for (FLineData& LineData : LineDatas)
 	{
-		const AdvancedLineDrawer::FRenderData& RenderData = LineData.RenderData;
+		AdvancedLineDrawer::FRenderData& RenderData = LineData.RenderData;
+		AdvancedLineDrawer::LineBuilder::UpdateRenderData(LineData.LineDescriptor, RenderData, AllottedGeometry);
 		if (!RenderData.RenderingResourceHandle.IsValid() || RenderData.VertexData.Num() == 0 || RenderData.IndexData.Num() == 0)
 		{
 			continue;
