@@ -3,25 +3,61 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "LineDrawer.generated.h"
 
-namespace AdvancedLineDrawer
+using FALDCurvePointType = FVector2d;
+
+USTRUCT()
+struct ADVANCEDLINEDRAWER_API FALDLineDescriptor
 {
-	using FCurvePointType = FVector2d;
+	GENERATED_BODY();
 
-	struct FLineDescriptor
-	{
-		FCurvePointType StartPoint;
-		FCurvePointType EndPoint;
-		float InterpStartT = 0.0f;
-		float InterpEndT = 1.0f;
-		float Thickness = 8.0f;
-		float Resolution = 32.0f;
-		float DynamicResolutionFactor = 32.0f;
-		float MaxResolution = 256.0f;
-		FSlateBrush Brush;
-		FInterpCurve<FCurvePointType> InterpCurve;
-	};
+	int32 AddPoint(const FALDCurvePointType& Point, float InterpT, EInterpCurveMode InterpMode, const TOptional<FALDCurvePointType>& ArriveTangent, const TOptional<FALDCurvePointType>& LeaveTangent);
+	void SetPointsWithAutoTangents(const TArray<FALDCurvePointType>& Points, float InterpStartT = 0.0f, float InterpEndT = 1.0f, EInterpCurveMode InterpMode = CIM_Linear);
 
+	UPROPERTY(EditAnywhere)
+	float CurveInterpStartT = 0.0f;
+
+	UPROPERTY(EditAnywhere)
+	float CurveInterpEndT = 1.0f;
+
+	UPROPERTY(EditAnywhere)
+	float Thickness = 8.0f;
+
+	UPROPERTY(EditAnywhere)
+	float Resolution = 16.0f;
+
+	UPROPERTY(EditAnywhere)
+	float DynamicResolutionFactor = 32.0f;
+
+	UPROPERTY(EditAnywhere)
+	float MaxResolution = 128.0f;
+
+	UPROPERTY(EditAnywhere)
+	FSlateBrush Brush;
+
+	FInterpCurve<FALDCurvePointType> InterpCurve;
+};
+
+class ADVANCEDLINEDRAWER_API ILineDrawer
+{
+public:
+	virtual ~ILineDrawer() = default;
+
+	int32 AddLine(const FALDLineDescriptor& LineDescriptor);
+	bool UpdateLine(int32 LineIndex, TFunctionRef<bool(FALDLineDescriptor& OutLineDescriptor)> Updater);
+	void RemoveLine(int32 LineIndex);
+	void RemoveAllLines();
+
+	const FALDLineDescriptor* GetLine(int32 LineIndex);
+
+protected:
+	virtual SWidget& GetLineDrawerWidget() = 0;
+
+	void AddLineDrawerReferencedObjects(FReferenceCollector& Collector) const;
+	int32 DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
+
+private:
 	struct FRenderData
 	{
 		TArray<FSlateVertex> VertexData;
@@ -30,34 +66,13 @@ namespace AdvancedLineDrawer
 		uint32 DirtyHash = 0;
 	};
 
-	namespace LineBuilder
-	{
-		FInterpCurve<FCurvePointType> BuildCubicInterpCurveWithAutoTangents(const FCurvePointType& Start, const FCurvePointType& End);
-		void UpdateRenderData(const FLineDescriptor& LineDescriptor, FRenderData& InOutRenderData, const FGeometry& AllottedGeometry);
-	}
-}
-
-class ADVANCEDLINEDRAWER_API ILineDrawer
-{
-public:
-	virtual ~ILineDrawer() = default;
-
-	int32 AddLine(AdvancedLineDrawer::FLineDescriptor&& LineDescriptor, bool bAutoBuildInterpCurve = true);
-	bool UpdateLine(int32 LineIndex, TFunctionRef<bool(AdvancedLineDrawer::FLineDescriptor& OutLineDescriptor)> Updater);
-	void RemoveLine(int32 LineIndex);
-	void RemoveAllLines();
-
-protected:
-	virtual SWidget& GetLineDrawerWidget() = 0;
-
-	void AddLineDrawerReferencedObjects(FReferenceCollector& Collector);
-	int32 DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const;
-
-private:
 	struct FLineData
 	{
-		AdvancedLineDrawer::FLineDescriptor LineDescriptor;
-		AdvancedLineDrawer::FRenderData RenderData;
+		FALDLineDescriptor LineDescriptor;
+		FRenderData RenderData;
 	};
 	mutable TSparseArray<FLineData> LineDatas;
+
+protected:
+	static void UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRenderData& InOutRenderData, const FGeometry& AllottedGeometry);
 };

@@ -37,18 +37,46 @@ protected:
 	//~ End SLeafWidget Interface
 };
 
-UCLASS()
-class ADVANCEDLINEDRAWER_API ULineDrawerWidget : public UWidget
+USTRUCT()
+struct FLineWithAutoTangent
 {
 	GENERATED_BODY()
 
-public:
-	UFUNCTION(BlueprintCallable)
-	int32 AddLine(const FVector2D& StartPoint, const FVector2D& EndPoint, const FSlateBrush& Brush, float Thickness = 8.0f, float InterpStartT = 0.0f, float InterpEndT = 1.0f, float Resolution = 32.0f);
+	UPROPERTY(EditAnywhere)
+	TArray<FVector2D> Points;
+
+	UPROPERTY(EditAnywhere)
+	float InterpStartT = 0.0f;
+
+	UPROPERTY(EditAnywhere)
+	float InterpEndT = 1.0f;
+
+	UPROPERTY(EditAnywhere)
+	TEnumAsByte<EInterpCurveMode> InterpMode = CIM_Linear;
+
+	UPROPERTY(EditAnywhere)
+	FALDLineDescriptor LineDescriptor;
+
+	int32 LineIndex = INDEX_NONE;
+
+	void WritePointsToLineDescriptor();
+};
+
+/**
+ * Example widget to draw line.
+ */
+UCLASS()
+class ULineDrawerWidget : public UWidget
+{
+	GENERATED_BODY()
 
 protected:
 	virtual TSharedRef<SWidget> RebuildWidget() override;
+	virtual void SynchronizeProperties() override;
 	virtual void ReleaseSlateResources(bool bReleaseChildren) override;
+
+	UPROPERTY(EditAnywhere)
+	TArray<FLineWithAutoTangent> Lines;
 
 	TSharedPtr<SLineDrawerWidget> MyLineDrawerWidget;
 };

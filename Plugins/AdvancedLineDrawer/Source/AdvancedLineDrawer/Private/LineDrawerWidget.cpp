@@ -31,28 +31,48 @@ FVector2D SLineDrawerWidget::ComputeDesiredSize(float) const
 	return FVector2D(256.0f, 256.0f);
 }
 
-int32 ULineDrawerWidget::AddLine(const FVector2D& StartPoint, const FVector2D& EndPoint, const FSlateBrush& Brush, float Thickness, float InterpStartT, float InterpEndT, float Resolution)
+void FLineWithAutoTangent::WritePointsToLineDescriptor()
 {
-	if (MyLineDrawerWidget.IsValid())
-	{
-		AdvancedLineDrawer::FLineDescriptor LineDescriptor;
-		LineDescriptor.StartPoint = StartPoint;
-		LineDescriptor.EndPoint = EndPoint;
-		LineDescriptor.InterpStartT = InterpStartT;
-		LineDescriptor.InterpEndT = InterpEndT;
-		LineDescriptor.Thickness = Thickness;
-		LineDescriptor.Resolution = Resolution;
-		LineDescriptor.Brush = Brush;
-		return MyLineDrawerWidget->AddLine(MoveTemp(LineDescriptor));
-	}
-
-	return INDEX_NONE;
+	LineDescriptor.SetPointsWithAutoTangents(Points, InterpStartT, InterpEndT, InterpMode);
 }
 
 TSharedRef<SWidget> ULineDrawerWidget::RebuildWidget()
 {
 	MyLineDrawerWidget = SNew(SLineDrawerWidget);
 	return MyLineDrawerWidget.ToSharedRef();
+}
+
+void ULineDrawerWidget::SynchronizeProperties()
+{
+	Super::SynchronizeProperties();
+
+	if (MyLineDrawerWidget.IsValid())
+	{
+		for (FLineWithAutoTangent& Line : Lines)
+		{
+			Line.WritePointsToLineDescriptor();
+
+			if (Line.LineIndex == INDEX_NONE)
+			{
+				Line.LineIndex = MyLineDrawerWidget->AddLine(Line.LineDescriptor);
+			}
+			else
+			{
+				if (MyLineDrawerWidget->GetLine(Line.LineIndex))
+				{
+					MyLineDrawerWidget->UpdateLine(Line.LineIndex, [&Line](FALDLineDescriptor& OutLineDescriptor)
+					{
+						OutLineDescriptor = Line.LineDescriptor;
+						return true;
+					});
+				}
+				else
+				{
+					Line.LineIndex = MyLineDrawerWidget->AddLine(Line.LineDescriptor);
+				}
+			}
+		}
+	}
 }
 
 void ULineDrawerWidget::ReleaseSlateResources(bool bReleaseChildren)
