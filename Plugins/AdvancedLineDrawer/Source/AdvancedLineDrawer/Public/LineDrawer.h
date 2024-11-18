@@ -5,24 +5,55 @@
 #include "CoreMinimal.h"
 #include "LineDrawer.generated.h"
 
-using FALDCurvePointType = FVector2d;
+using FALDCurvePointType = FVector2D;
+
+USTRUCT()
+struct ADVANCEDLINEDRAWER_API FALDSplineTangentSettings
+{
+	GENERATED_BODY()
+
+	UPROPERTY(EditAnywhere)
+	bool bTranspose = true;
+
+	UPROPERTY(EditAnywhere)
+	float ForwardSplineHorizontalDeltaRange = 1000.0f;
+
+	UPROPERTY(EditAnywhere)
+	float ForwardSplineVerticalDeltaRange = 1000.0f;
+
+	UPROPERTY(EditAnywhere)
+	FVector2D ForwardSplineTangentFromHorizontalDelta = {1.0f, 0.0f};
+
+	UPROPERTY(EditAnywhere)
+	FVector2D ForwardSplineTangentFromVerticalDelta = {1.0f, 0.0f};
+
+	UPROPERTY(EditAnywhere)
+	float BackwardSplineHorizontalDeltaRange = 200.0f;
+
+	UPROPERTY(EditAnywhere)
+	float BackwardSplineVerticalDeltaRange = 200.0f;
+
+	UPROPERTY(EditAnywhere)
+	FVector2D BackwardSplineTangentFromHorizontalDelta = {2.0f, 0.0f};
+
+	UPROPERTY(EditAnywhere)
+	FVector2D BackwardSplineTangentFromVerticalDelta = {1.5f, 0.0f};
+};
 
 USTRUCT()
 struct ADVANCEDLINEDRAWER_API FALDLineDescriptor
 {
 	GENERATED_BODY();
 
-	int32 AddPoint(const FALDCurvePointType& Point, float InterpT, EInterpCurveMode InterpMode, const TOptional<FALDCurvePointType>& ArriveTangent, const TOptional<FALDCurvePointType>& LeaveTangent);
-	void SetPointsWithAutoTangents(const TArray<FALDCurvePointType>& Points, float InterpStartT = 0.0f, float InterpEndT = 1.0f, EInterpCurveMode InterpMode = CIM_Linear);
+	int32 AddPoint(const FALDCurvePointType& Point, float InterpT, EInterpCurveMode InterpMode = CIM_CurveUser, const FALDCurvePointType& ArriveTangent = FALDCurvePointType::Zero(), const FALDCurvePointType& LeaveTangent = FALDCurvePointType::Zero());
+	void SetPointsWithAutoTangents(const TArray<FALDCurvePointType>& Points, float InterpStartT = 0.0f, float InterpEndT = 1.0f, EInterpCurveMode InterpMode = CIM_CurveUser, const FALDSplineTangentSettings& TangentSettings = FALDSplineTangentSettings());
+	static FALDCurvePointType ComputeSplineTangent(const FALDCurvePointType& Start, const FALDCurvePointType& End, const FALDSplineTangentSettings& Settings = FALDSplineTangentSettings());
 
 	UPROPERTY(EditAnywhere)
-	float CurveInterpStartT = 0.0f;
+	FFloatRange CurveInterpRange;
 
 	UPROPERTY(EditAnywhere)
-	float CurveInterpEndT = 1.0f;
-
-	UPROPERTY(EditAnywhere)
-	float Thickness = 8.0f;
+	float Thickness = 4.0f;
 
 	UPROPERTY(EditAnywhere)
 	float Resolution = 16.0f;

@@ -3,19 +3,19 @@
 
 #include "LineDrawer.h"
 
-int32 FALDLineDescriptor::AddPoint(const FALDCurvePointType& Point, float InterpT, EInterpCurveMode InterpMode, const TOptional<FALDCurvePointType>& ArriveTangent, const TOptional<FALDCurvePointType>& LeaveTangent)
+int32 FALDLineDescriptor::AddPoint(const FALDCurvePointType& Point, float InterpT, EInterpCurveMode InterpMode, const FALDCurvePointType& ArriveTangent, const FALDCurvePointType& LeaveTangent)
 {
 	const int32 NewCurvePointIndex = InterpCurve.AddPoint(InterpT, Point);
 	auto& NewCurvePoint = InterpCurve.Points[NewCurvePointIndex];
 
 	NewCurvePoint.InterpMode = InterpMode;
-	NewCurvePoint.ArriveTangent = ArriveTangent.Get(FALDCurvePointType::Zero());
-	NewCurvePoint.LeaveTangent = LeaveTangent.Get(FALDCurvePointType::Zero());
+	NewCurvePoint.ArriveTangent = ArriveTangent;
+	NewCurvePoint.LeaveTangent = LeaveTangent;
 
 	return NewCurvePointIndex;
 }
 
-void FALDLineDescriptor::SetPointsWithAutoTangents(const TArray<FALDCurvePointType>& Points, float InterpStartT, float InterpEndT, EInterpCurveMode InterpMode)
+void FALDLineDescriptor::SetPointsWithAutoTangents(const TArray<FALDCurvePointType>& Points, float InterpStartT, float InterpEndT, EInterpCurveMode InterpMode, const FALDSplineTangentSettings& TangentSettings)
 {
 	const int32 NumPoints = Points.Num();
 	InterpCurve.Reset();
@@ -24,9 +24,31 @@ void FALDLineDescriptor::SetPointsWithAutoTangents(const TArray<FALDCurvePointTy
 	{
 		const FALDCurvePointType& CurrentPoint = Points[Index];
 		const float InterpT = FMath::Lerp(InterpStartT, InterpEndT, NumPoints > 1 ? static_cast<float>(Index) / (NumPoints - 1) : 1.0f);
-		const FALDCurvePointType ArriveTangent = Index > 0 ? FALDCurvePointType(0, Points[Index - 1].Y - CurrentPoint.Y) : FALDCurvePointType::Zero();
-		const FALDCurvePointType LeaveTangent = Index < NumPoints - 1 ? FALDCurvePointType(Points[Index + 1].X - CurrentPoint.X, 0) : FALDCurvePointType::Zero();
-		InterpCurve.Points[Index] = FInterpCurvePoint(InterpT, CurrentPoint, ArriveTangent, LeaveTangent, InterpMode);
+
+		if (Index < NumPoints - 1)
+		{
+			const FALDCurvePointType SplineTangent = ComputeSplineTangent(CurrentPoint, Points[Index + 1], TangentSettings);
+			const FALDCurvePointType LeaveTangent = TangentSettings.bTranspose ? FALDCurvePointType(-SplineTangent.Y, -SplineTangent.X) : -SplineTangent;
+			InterpCurve.Points[Index] = FInterpCurvePoint(InterpT, CurrentPoint, SplineTangent, LeaveTangent, InterpMode);
+		}
+	}
+}
+
+FALDCurvePointType FALDLineDescriptor::ComputeSplineTangent(const FALDCurvePointType& Start, const FALDCurvePointType& End, const FALDSplineTangentSettings& Settings)
+{
+	const FVector2D DeltaPos = End - Start;
+	const bool bGoingForward = DeltaPos.X >= 0.0f;
+
+	const float ClampedTensionX = FMath::Min<float>(FMath::Abs<float>(DeltaPos.X), bGoingForward ? Settings.ForwardSplineHorizontalDeltaRange : Settings.BackwardSplineHorizontalDeltaRange);
+	const float ClampedTensionY = FMath::Min<float>(FMath::Abs<float>(DeltaPos.Y), bGoingForward ? Settings.ForwardSplineVerticalDeltaRange : Settings.BackwardSplineVerticalDeltaRange);
+
+	if (bGoingForward)
+	{
+		return (ClampedTensionX * Settings.ForwardSplineTangentFromHorizontalDelta) + (ClampedTensionY * Settings.ForwardSplineTangentFromVerticalDelta);
+	}
+	else
+	{
+		return (ClampedTensionX * Settings.BackwardSplineTangentFromHorizontalDelta) + (ClampedTensionY * Settings.BackwardSplineTangentFromVerticalDelta);
 	}
 }
 
@@ -107,7 +129,7 @@ int32 ILineDrawer::DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElem
 
 void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRenderData& InOutRenderData, const FGeometry& AllottedGeometry)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(AdvancedLineDrawer_UpdateRenderData);
+	QUICK_SCOPE_CYCLE_COUNTER(ILineDrawer_UpdateRenderData);
 	{
 		uint32 GeometryHash = FCrc::TypeCrc32(AllottedGeometry);
 		uint32 DescriptorHash = FCrc::TypeCrc32(LineDescriptor);
@@ -119,7 +141,7 @@ void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRe
 		InOutRenderData.DirtyHash = DirtyHash;
 	}
 
-	const float InterpLengthT = LineDescriptor.CurveInterpEndT - LineDescriptor.CurveInterpStartT;
+	const float InterpLengthT = LineDescriptor.CurveInterpRange.Size<float>();
 	check(LineDescriptor.Resolution > 1.0f && InterpLengthT > 0);
 	const FColor TintColor = LineDescriptor.Brush.TintColor.GetSpecifiedColor().ToFColor(true);
 	const float DynamicResolutionCorr = LineDescriptor.DynamicResolutionFactor / AllottedGeometry.GetLocalSize().SquaredLength();
@@ -127,8 +149,8 @@ void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRe
 	InOutRenderData.VertexData.Reset();
 	InOutRenderData.IndexData.Reset();
 
-	float EvalT = LineDescriptor.CurveInterpStartT;
-	while (EvalT < LineDescriptor.CurveInterpEndT)
+	float EvalT = LineDescriptor.CurveInterpRange.GetLowerBoundValue();
+	while (EvalT < LineDescriptor.CurveInterpRange.GetUpperBoundValue())
 	{
 		EvalT = FMath::Clamp(EvalT, 0.0f, 1.0f);
 
@@ -140,7 +162,7 @@ void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRe
 		const FALDCurvePointType VertexPos1 = AllottedGeometry.LocalToAbsolute(CurvePoint + ScaledNormal);
 		const FALDCurvePointType VertexPos2 = AllottedGeometry.LocalToAbsolute(CurvePoint - ScaledNormal);
 
-		const float CoordinateU = (EvalT - LineDescriptor.CurveInterpStartT) / InterpLengthT;
+		const float CoordinateU = (EvalT - LineDescriptor.CurveInterpRange.GetLowerBoundValue()) / InterpLengthT;
 		{
 			FSlateVertex& NewVert1 = InOutRenderData.VertexData[InOutRenderData.VertexData.AddUninitialized()];
 			NewVert1.Position[0] = VertexPos1[0];
@@ -183,7 +205,7 @@ void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRe
 
 		const float DynamicResolution = SecondDerivative.SquaredLength() * DynamicResolutionCorr;
 		const float Resolution = FMath::Min(LineDescriptor.Resolution + DynamicResolution, LineDescriptor.MaxResolution);
-		EvalT = FMath::Min(EvalT + 1.0f / Resolution, LineDescriptor.CurveInterpEndT);
+		EvalT = FMath::Min(EvalT + 1.0f / Resolution, LineDescriptor.CurveInterpRange.GetUpperBoundValue());
 	}
 
 	if(!InOutRenderData.RenderingResourceHandle.IsValid())
