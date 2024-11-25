@@ -3,7 +3,7 @@
 
 #include "LineDrawer.h"
 
-int32 FALDLineDescriptor::AddPoint(const FALDCurvePointType& Point, float InterpT, EInterpCurveMode InterpMode, const FALDCurvePointType& ArriveTangent, const FALDCurvePointType& LeaveTangent)
+int32 FALDLineDescriptor::AddPoint(const FVector2D& Point, float InterpT, EInterpCurveMode InterpMode, const FVector2D& ArriveTangent, const FVector2D& LeaveTangent)
 {
 	const int32 NewCurvePointIndex = InterpCurve.AddPoint(InterpT, Point);
 	auto& NewCurvePoint = InterpCurve.Points[NewCurvePointIndex];
@@ -15,26 +15,31 @@ int32 FALDLineDescriptor::AddPoint(const FALDCurvePointType& Point, float Interp
 	return NewCurvePointIndex;
 }
 
-void FALDLineDescriptor::SetPointsWithAutoTangents(const TArray<FALDCurvePointType>& Points, float InterpStartT, float InterpEndT, EInterpCurveMode InterpMode, const FALDSplineTangentSettings& TangentSettings)
+void FALDLineDescriptor::SetPointsWithAutoTangents(const TArray<FVector2D>& Points, float InterpStartT, float InterpEndT, EInterpCurveMode InterpMode, const FALDSplineTangentSettings& TangentSettings)
 {
 	const int32 NumPoints = Points.Num();
 	InterpCurve.Reset();
 	InterpCurve.Points.AddUninitialized(NumPoints);
+	FVector2D NextArriveTangent = FVector2D::Zero();
 	for (int32 Index = 0; Index < NumPoints; ++Index)
 	{
-		const FALDCurvePointType& CurrentPoint = Points[Index];
+		const FVector2D& CurrentPoint = Points[Index];
 		const float InterpT = FMath::Lerp(InterpStartT, InterpEndT, NumPoints > 1 ? static_cast<float>(Index) / (NumPoints - 1) : 1.0f);
 
 		if (Index < NumPoints - 1)
 		{
-			const FALDCurvePointType SplineTangent = ComputeSplineTangent(CurrentPoint, Points[Index + 1], TangentSettings);
-			const FALDCurvePointType LeaveTangent = TangentSettings.bTranspose ? FALDCurvePointType(-SplineTangent.Y, -SplineTangent.X) : -SplineTangent;
-			InterpCurve.Points[Index] = FInterpCurvePoint(InterpT, CurrentPoint, SplineTangent, LeaveTangent, InterpMode);
+			const FVector2D SplineTangent = ComputeSplineTangent(CurrentPoint, Points[Index + 1], TangentSettings);
+			InterpCurve.Points[Index] = FInterpCurvePoint(InterpT, CurrentPoint, NextArriveTangent, SplineTangent, InterpMode);
+			NextArriveTangent = TangentSettings.bTranspose ? FVector2D(-SplineTangent.Y, -SplineTangent.X) : -SplineTangent;
+		}
+		else
+		{
+			InterpCurve.Points[Index] = FInterpCurvePoint(InterpT, CurrentPoint, NextArriveTangent, FVector2D::Zero(), InterpMode);
 		}
 	}
 }
 
-FALDCurvePointType FALDLineDescriptor::ComputeSplineTangent(const FALDCurvePointType& Start, const FALDCurvePointType& End, const FALDSplineTangentSettings& Settings)
+FVector2D FALDLineDescriptor::ComputeSplineTangent(const FVector2D& Start, const FVector2D& End, const FALDSplineTangentSettings& Settings)
 {
 	const FVector2D DeltaPos = End - Start;
 	const bool bGoingForward = DeltaPos.X >= 0.0f;
@@ -110,8 +115,11 @@ void ILineDrawer::AddLineDrawerReferencedObjects(FReferenceCollector& Collector)
 	}
 }
 
+DECLARE_STATS_GROUP(TEXT("LineDrawer"), STATGROUP_LineDrawer, STATCAT_Advanced);
 int32 ILineDrawer::DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const
 {
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("DrawLines"), STAT_LineDrawer_DrawLines, STATGROUP_LineDrawer);
+
 	for (FLineData& LineData : LineDatas)
 	{
 		FRenderData& RenderData = LineData.RenderData;
@@ -129,83 +137,153 @@ int32 ILineDrawer::DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElem
 
 void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRenderData& InOutRenderData, const FGeometry& AllottedGeometry)
 {
-	QUICK_SCOPE_CYCLE_COUNTER(ILineDrawer_UpdateRenderData);
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UpdateRenderData"), STAT_LineDrawer_UpdateRenderData, STATGROUP_LineDrawer);
+
+	const uint32 InterpCurveHash = FCrc::MemCrc32(LineDescriptor.InterpCurve.Points.GetData(), LineDescriptor.InterpCurve.Points.Num() * LineDescriptor.InterpCurve.Points.GetTypeSize());
+	const bool bNeedToReEvalInterpCurve = InterpCurveHash != InOutRenderData.InterpCurveDirtyHash;
+	bool bNeedToUpdateVertexData = bNeedToReEvalInterpCurve;
+	if (bNeedToReEvalInterpCurve)
 	{
-		uint32 GeometryHash = FCrc::TypeCrc32(AllottedGeometry);
-		uint32 DescriptorHash = FCrc::TypeCrc32(LineDescriptor);
-		uint32 DirtyHash = HashCombineFast(GeometryHash, DescriptorHash);
-		if (DirtyHash == InOutRenderData.DirtyHash)
+		InOutRenderData.InterpCurveDirtyHash = InterpCurveHash;
+	}
+	else
+	{
+		const uint32 GeometryHash = FCrc::TypeCrc32(AllottedGeometry);
+		const uint32 BrushHash = FCrc::TypeCrc32(LineDescriptor.Brush);
+		const uint32 VertexDataDirtyHash = HashCombine(GeometryHash, BrushHash);
+		bNeedToUpdateVertexData = VertexDataDirtyHash != InOutRenderData.VertexDataDirtyHash;
+		if (bNeedToUpdateVertexData)
+		{
+			InOutRenderData.VertexDataDirtyHash = VertexDataDirtyHash;
+		}
+	}
+
+	if (!bNeedToReEvalInterpCurve && !bNeedToUpdateVertexData)
+	{
+		return;
+	}
+
+	if (bNeedToReEvalInterpCurve)
+	{
+		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("EvalInterpCurve"), STAT_LineDrawer_EvalInterpCurve, STATGROUP_LineDrawer);
+
+		InOutRenderData.InterpCurveEvalResultCache.Reset();
+		auto& KeyPoints = LineDescriptor.InterpCurve.Points;
+		if (KeyPoints.Num() > 0)
+		{
+			const float DynamicResolutionScale = LineDescriptor.DynamicResolutionFactor * AllottedGeometry.GetLocalSize().Length();
+			check(DynamicResolutionScale >= 0);
+			check(LineDescriptor.Resolution > 0);
+			TArray<float, TInlineAllocator<256>> EvalTValues;
+
+			float EvalT = LineDescriptor.InterpCurveStartT;
+			int32 SmallestKeyPointIndex;
+			for (SmallestKeyPointIndex = 0; SmallestKeyPointIndex < KeyPoints.Num() && KeyPoints[SmallestKeyPointIndex].InVal < EvalT; ++SmallestKeyPointIndex){}
+
+			while (EvalT <= LineDescriptor.InterpCurveEndT)
+			{
+				if (KeyPoints.IsValidIndex(SmallestKeyPointIndex) && EvalT > KeyPoints[SmallestKeyPointIndex].InVal)
+				{
+					EvalT = KeyPoints[SmallestKeyPointIndex].InVal;
+					++SmallestKeyPointIndex;
+				}
+
+				EvalTValues.Add(EvalT);
+				if (EvalT == LineDescriptor.InterpCurveEndT)
+				{
+					break;
+				}
+
+				const float SecondDerivativeSq = LineDescriptor.InterpCurve.EvalSecondDerivative(EvalT).SquaredLength();
+				constexpr float UnitLengthSq = 512.0f * 512.0f;
+				const float DynamicResolution = DynamicResolutionScale * SecondDerivativeSq / UnitLengthSq;
+				const float Resolution = FMath::Min(LineDescriptor.Resolution + DynamicResolution, LineDescriptor.MaxResolution);
+				EvalT = FMath::Min(EvalT + 1.0f / Resolution, LineDescriptor.InterpCurveEndT);
+			}
+
+			InOutRenderData.InterpCurveEvalResultCache.SetNumUninitialized(EvalTValues.Num());
+			ParallelFor(EvalTValues.Num(), [&EvalTValues, &LineDescriptor, &InOutRenderData](int32 Index)
+			{
+				const float T = EvalTValues[Index];
+				const FVector2D CurvePoint = LineDescriptor.InterpCurve.Eval(T);
+				const FVector2D Tangent = LineDescriptor.InterpCurve.EvalDerivative(T).GetSafeNormal();
+				const FVector2D ScaledNormal = Tangent.GetRotated(90.0f) * LineDescriptor.Thickness;
+				InOutRenderData.InterpCurveEvalResultCache[Index] = MakeTuple(T, CurvePoint, ScaledNormal);
+			});
+		}
+	}
+
+	if (bNeedToUpdateVertexData)
+	{
+		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UpdateVertexData"), STAT_LineDrawer_UpdateVertexData, STATGROUP_LineDrawer);
+
+		const int32 NumSamples = InOutRenderData.InterpCurveEvalResultCache.Num();
+		if (NumSamples <= 1)
+		{
+			InOutRenderData.VertexData.Empty();
+			InOutRenderData.IndexData.Empty();
+			return;
+		}
+		float InterpLength = LineDescriptor.InterpCurveEndT - LineDescriptor.InterpCurveStartT;
+		if (InterpLength <= 0)
 		{
 			return;
 		}
-		InOutRenderData.DirtyHash = DirtyHash;
-	}
 
-	const float InterpLengthT = LineDescriptor.CurveInterpRange.Size<float>();
-	check(LineDescriptor.Resolution > 1.0f && InterpLengthT > 0);
-	const FColor TintColor = LineDescriptor.Brush.TintColor.GetSpecifiedColor().ToFColor(true);
-	const float DynamicResolutionCorr = LineDescriptor.DynamicResolutionFactor / AllottedGeometry.GetLocalSize().SquaredLength();
+		InOutRenderData.VertexData.SetNumUninitialized(2 * NumSamples);
+		InOutRenderData.IndexData.SetNumUninitialized(6 * (NumSamples - 1));
 
-	InOutRenderData.VertexData.Reset();
-	InOutRenderData.IndexData.Reset();
+		const FColor TintColor = LineDescriptor.Brush.TintColor.GetSpecifiedColor().ToFColor(true);
 
-	float EvalT = LineDescriptor.CurveInterpRange.GetLowerBoundValue();
-	while (EvalT < LineDescriptor.CurveInterpRange.GetUpperBoundValue())
-	{
-		EvalT = FMath::Clamp(EvalT, 0.0f, 1.0f);
-
-		const FALDCurvePointType CurvePoint = LineDescriptor.InterpCurve.Eval(EvalT);
-		const FALDCurvePointType Tangent = LineDescriptor.InterpCurve.EvalDerivative(EvalT).GetSafeNormal();
-		const FALDCurvePointType ScaledNormal = Tangent.GetRotated(90.0f) * LineDescriptor.Thickness;
-		const FALDCurvePointType SecondDerivative = LineDescriptor.InterpCurve.EvalSecondDerivative(EvalT);
-
-		const FALDCurvePointType VertexPos1 = AllottedGeometry.LocalToAbsolute(CurvePoint + ScaledNormal);
-		const FALDCurvePointType VertexPos2 = AllottedGeometry.LocalToAbsolute(CurvePoint - ScaledNormal);
-
-		const float CoordinateU = (EvalT - LineDescriptor.CurveInterpRange.GetLowerBoundValue()) / InterpLengthT;
+		ParallelFor(InOutRenderData.InterpCurveEvalResultCache.Num(), [&InOutRenderData, &TintColor, &AllottedGeometry, &LineDescriptor, InterpLength](int32 Index)
 		{
-			FSlateVertex& NewVert1 = InOutRenderData.VertexData[InOutRenderData.VertexData.AddUninitialized()];
-			NewVert1.Position[0] = VertexPos1[0];
-			NewVert1.Position[1] = VertexPos1[1];
-			NewVert1.Color = TintColor;
-			//TODO: UV Tiling
-			NewVert1.MaterialTexCoords[0] = CoordinateU;
-			NewVert1.MaterialTexCoords[1] = 0.0f;
-			NewVert1.TexCoords[0] = CoordinateU;
-			NewVert1.TexCoords[1] = 0.0f;
-			NewVert1.TexCoords[2] = CoordinateU;
-			NewVert1.TexCoords[3] = 0.0f;
-		}
+			TTuple<float, FVector2D, FVector2D>& Sample = InOutRenderData.InterpCurveEvalResultCache[Index];
+			const FVector2D VertexPos1 = AllottedGeometry.LocalToAbsolute(Sample.Get<1>() + Sample.Get<2>());
+			const FVector2D VertexPos2 = AllottedGeometry.LocalToAbsolute(Sample.Get<1>() - Sample.Get<2>());
 
-		{
-			FSlateVertex& NewVert2 = InOutRenderData.VertexData[InOutRenderData.VertexData.AddUninitialized()];
-			NewVert2.Position[0] = VertexPos2[0];
-			NewVert2.Position[1] = VertexPos2[1];
-			NewVert2.Color = TintColor;
-			//TODO: UV Tiling
-			NewVert2.MaterialTexCoords[0] = CoordinateU;
-			NewVert2.MaterialTexCoords[1] = 1.0f;
-			NewVert2.TexCoords[0] = CoordinateU;
-			NewVert2.TexCoords[1] = 1.0f;
-			NewVert2.TexCoords[2] = CoordinateU;
-			NewVert2.TexCoords[3] = 1.0f;
-		}
+			const float EvalT = Sample.Get<0>();
+			const float CoordinateU = (EvalT - LineDescriptor.InterpCurveStartT) / InterpLength;
+			{
+				FSlateVertex& Vert1 = InOutRenderData.VertexData[2 * Index];
+				Vert1.Position[0] = VertexPos1[0];
+				Vert1.Position[1] = VertexPos1[1];
+				Vert1.Color = TintColor;
+				//TODO: UV Tiling
+				Vert1.MaterialTexCoords[0] = CoordinateU;
+				Vert1.MaterialTexCoords[1] = 0.0f;
+				Vert1.TexCoords[0] = CoordinateU;
+				Vert1.TexCoords[1] = 0.0f;
+				Vert1.TexCoords[2] = CoordinateU;
+				Vert1.TexCoords[3] = 0.0f;
+			}
 
-		const int32 LastVertexIndex = InOutRenderData.VertexData.Num() - 1;
-		if (LastVertexIndex >= 3)
-		{
-			InOutRenderData.IndexData.Emplace(LastVertexIndex - 2);
-			InOutRenderData.IndexData.Emplace(LastVertexIndex - 1);
-			InOutRenderData.IndexData.Emplace(LastVertexIndex);
+			const int32 SecondVertIndex = 2 * Index + 1;
+			{
+				FSlateVertex& Vert2 = InOutRenderData.VertexData[SecondVertIndex];
+				Vert2.Position[0] = VertexPos2[0];
+				Vert2.Position[1] = VertexPos2[1];
+				Vert2.Color = TintColor;
+				//TODO: UV Tiling
+				Vert2.MaterialTexCoords[0] = CoordinateU;
+				Vert2.MaterialTexCoords[1] = 1.0f;
+				Vert2.TexCoords[0] = CoordinateU;
+				Vert2.TexCoords[1] = 1.0f;
+				Vert2.TexCoords[2] = CoordinateU;
+				Vert2.TexCoords[3] = 1.0f;
+			}
 
-			InOutRenderData.IndexData.Emplace(LastVertexIndex - 3);
-			InOutRenderData.IndexData.Emplace(LastVertexIndex - 2);
-			InOutRenderData.IndexData.Emplace(LastVertexIndex - 1);
-		}
+			if (Index > 0)
+			{
+				const int32 IndexDataStartIndex = 6 * (Index - 1);
+				InOutRenderData.IndexData[IndexDataStartIndex] = SecondVertIndex - 2;
+				InOutRenderData.IndexData[IndexDataStartIndex + 1] = SecondVertIndex - 1;
+				InOutRenderData.IndexData[IndexDataStartIndex + 2] = SecondVertIndex;
 
-		const float DynamicResolution = SecondDerivative.SquaredLength() * DynamicResolutionCorr;
-		const float Resolution = FMath::Min(LineDescriptor.Resolution + DynamicResolution, LineDescriptor.MaxResolution);
-		EvalT = FMath::Min(EvalT + 1.0f / Resolution, LineDescriptor.CurveInterpRange.GetUpperBoundValue());
+				InOutRenderData.IndexData[IndexDataStartIndex + 3] = SecondVertIndex - 3;
+				InOutRenderData.IndexData[IndexDataStartIndex + 4] = SecondVertIndex - 2;
+				InOutRenderData.IndexData[IndexDataStartIndex + 5] = SecondVertIndex - 1;
+			}
+		});
 	}
 
 	if(!InOutRenderData.RenderingResourceHandle.IsValid())

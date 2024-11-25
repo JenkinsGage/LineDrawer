@@ -5,8 +5,6 @@
 #include "CoreMinimal.h"
 #include "LineDrawer.generated.h"
 
-using FALDCurvePointType = FVector2D;
-
 USTRUCT()
 struct ADVANCEDLINEDRAWER_API FALDSplineTangentSettings
 {
@@ -45,29 +43,32 @@ struct ADVANCEDLINEDRAWER_API FALDLineDescriptor
 {
 	GENERATED_BODY();
 
-	int32 AddPoint(const FALDCurvePointType& Point, float InterpT, EInterpCurveMode InterpMode = CIM_CurveUser, const FALDCurvePointType& ArriveTangent = FALDCurvePointType::Zero(), const FALDCurvePointType& LeaveTangent = FALDCurvePointType::Zero());
-	void SetPointsWithAutoTangents(const TArray<FALDCurvePointType>& Points, float InterpStartT = 0.0f, float InterpEndT = 1.0f, EInterpCurveMode InterpMode = CIM_CurveUser, const FALDSplineTangentSettings& TangentSettings = FALDSplineTangentSettings());
-	static FALDCurvePointType ComputeSplineTangent(const FALDCurvePointType& Start, const FALDCurvePointType& End, const FALDSplineTangentSettings& Settings = FALDSplineTangentSettings());
+	int32 AddPoint(const FVector2D& Point, float InterpT, EInterpCurveMode InterpMode = CIM_CurveUser, const FVector2D& ArriveTangent = FVector2D::Zero(), const FVector2D& LeaveTangent = FVector2D::Zero());
+	void SetPointsWithAutoTangents(const TArray<FVector2D>& Points, float InterpStartT = 0.0f, float InterpEndT = 1.0f, EInterpCurveMode InterpMode = CIM_CurveUser, const FALDSplineTangentSettings& TangentSettings = FALDSplineTangentSettings());
+	static FVector2D ComputeSplineTangent(const FVector2D& Start, const FVector2D& End, const FALDSplineTangentSettings& Settings);
 
 	UPROPERTY(EditAnywhere)
-	FFloatRange CurveInterpRange;
+	float InterpCurveStartT = 0.0f;
+
+	UPROPERTY(EditAnywhere)
+	float InterpCurveEndT = 1.0f;
 
 	UPROPERTY(EditAnywhere)
 	float Thickness = 4.0f;
 
 	UPROPERTY(EditAnywhere)
-	float Resolution = 16.0f;
+	float Resolution = 16;
 
 	UPROPERTY(EditAnywhere)
-	float DynamicResolutionFactor = 32.0f;
+	float DynamicResolutionFactor = 1.0f;
 
 	UPROPERTY(EditAnywhere)
-	float MaxResolution = 128.0f;
+	float MaxResolution = 128;
 
 	UPROPERTY(EditAnywhere)
 	FSlateBrush Brush;
 
-	FInterpCurve<FALDCurvePointType> InterpCurve;
+	FInterpCurve<FVector2D> InterpCurve;
 };
 
 class ADVANCEDLINEDRAWER_API ILineDrawer
@@ -94,7 +95,11 @@ private:
 		TArray<FSlateVertex> VertexData;
 		TArray<SlateIndex> IndexData;
 		FSlateResourceHandle RenderingResourceHandle;
-		uint32 DirtyHash = 0;
+
+		uint32 InterpCurveDirtyHash = 0;
+		uint32 VertexDataDirtyHash = 0;
+
+		TArray<TTuple<float, FVector2D, FVector2D>> InterpCurveEvalResultCache;
 	};
 
 	struct FLineData
