@@ -31,9 +31,9 @@ FVector2D SLineDrawerWidget::ComputeDesiredSize(float) const
 	return FVector2D(256.0f, 256.0f);
 }
 
-void FLineWithAutoTangent::WritePointsToLineDescriptor()
+void FLineWithAutoTangent::WritePointsToLineDescriptor(const FALDSplineTangentSettings& TangentSettings)
 {
-	LineDescriptor.SetPointsWithAutoTangents(Points, InterpStartT, InterpEndT, InterpMode);
+	LineDescriptor.SetPointsWithAutoTangents(Points, InterpStartT, InterpEndT, InterpMode, TangentSettings);
 }
 
 TSharedRef<SWidget> ULineDrawerWidget::RebuildWidget()
@@ -50,7 +50,7 @@ void ULineDrawerWidget::SynchronizeProperties()
 	{
 		for (FLineWithAutoTangent& Line : Lines)
 		{
-			Line.WritePointsToLineDescriptor();
+			Line.WritePointsToLineDescriptor(AutoTangentSettings);
 
 			if (Line.LineIndex == INDEX_NONE)
 			{

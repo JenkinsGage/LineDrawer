@@ -59,7 +59,7 @@ struct FLineWithAutoTangent
 
 	int32 LineIndex = INDEX_NONE;
 
-	void WritePointsToLineDescriptor();
+	void WritePointsToLineDescriptor(const FALDSplineTangentSettings& TangentSettings = FALDSplineTangentSettings());
 };
 
 /**
@@ -77,6 +77,9 @@ protected:
 
 	UPROPERTY(EditAnywhere)
 	TArray<FLineWithAutoTangent> Lines;
+
+	UPROPERTY(EditAnywhere)
+	FALDSplineTangentSettings AutoTangentSettings;
 
 	TSharedPtr<SLineDrawerWidget> MyLineDrawerWidget;
 };

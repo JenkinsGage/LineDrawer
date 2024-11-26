@@ -14,28 +14,16 @@ struct ADVANCEDLINEDRAWER_API FALDSplineTangentSettings
 	bool bTranspose = true;
 
 	UPROPERTY(EditAnywhere)
-	float ForwardSplineHorizontalDeltaRange = 1000.0f;
+	float SplineHorizontalDeltaRange = 1000.0f;
 
 	UPROPERTY(EditAnywhere)
-	float ForwardSplineVerticalDeltaRange = 1000.0f;
+	float SplineVerticalDeltaRange = 1000.0f;
 
 	UPROPERTY(EditAnywhere)
-	FVector2D ForwardSplineTangentFromHorizontalDelta = {1.0f, 0.0f};
+	FVector2D SplineTangentFromHorizontalDelta = {1.0f, 0.0f};
 
 	UPROPERTY(EditAnywhere)
-	FVector2D ForwardSplineTangentFromVerticalDelta = {1.0f, 0.0f};
-
-	UPROPERTY(EditAnywhere)
-	float BackwardSplineHorizontalDeltaRange = 200.0f;
-
-	UPROPERTY(EditAnywhere)
-	float BackwardSplineVerticalDeltaRange = 200.0f;
-
-	UPROPERTY(EditAnywhere)
-	FVector2D BackwardSplineTangentFromHorizontalDelta = {2.0f, 0.0f};
-
-	UPROPERTY(EditAnywhere)
-	FVector2D BackwardSplineTangentFromVerticalDelta = {1.5f, 0.0f};
+	FVector2D SplineTangentFromVerticalDelta = {1.0f, 0.0f};
 };
 
 USTRUCT()
@@ -45,7 +33,6 @@ struct ADVANCEDLINEDRAWER_API FALDLineDescriptor
 
 	int32 AddPoint(const FVector2D& Point, float InterpT, EInterpCurveMode InterpMode = CIM_CurveUser, const FVector2D& ArriveTangent = FVector2D::Zero(), const FVector2D& LeaveTangent = FVector2D::Zero());
 	void SetPointsWithAutoTangents(const TArray<FVector2D>& Points, float InterpStartT = 0.0f, float InterpEndT = 1.0f, EInterpCurveMode InterpMode = CIM_CurveUser, const FALDSplineTangentSettings& TangentSettings = FALDSplineTangentSettings());
-	static FVector2D ComputeSplineTangent(const FVector2D& Start, const FVector2D& End, const FALDSplineTangentSettings& Settings);
 
 	UPROPERTY(EditAnywhere)
 	float InterpCurveStartT = 0.0f;

@@ -18,8 +18,7 @@ int32 FALDLineDescriptor::AddPoint(const FVector2D& Point, float InterpT, EInter
 void FALDLineDescriptor::SetPointsWithAutoTangents(const TArray<FVector2D>& Points, float InterpStartT, float InterpEndT, EInterpCurveMode InterpMode, const FALDSplineTangentSettings& TangentSettings)
 {
 	const int32 NumPoints = Points.Num();
-	InterpCurve.Reset();
-	InterpCurve.Points.AddUninitialized(NumPoints);
+	InterpCurve.Points.SetNumUninitialized(NumPoints);
 	FVector2D NextArriveTangent = FVector2D::Zero();
 	for (int32 Index = 0; Index < NumPoints; ++Index)
 	{
@@ -28,32 +27,18 @@ void FALDLineDescriptor::SetPointsWithAutoTangents(const TArray<FVector2D>& Poin
 
 		if (Index < NumPoints - 1)
 		{
-			const FVector2D SplineTangent = ComputeSplineTangent(CurrentPoint, Points[Index + 1], TangentSettings);
+			const FVector2D DeltaPos = Points[Index + 1] - CurrentPoint;
+			const float ClampedTensionX = FMath::Min<float>(FMath::Abs<float>(DeltaPos.X), TangentSettings.SplineHorizontalDeltaRange);
+			const float ClampedTensionY = FMath::Min<float>(FMath::Abs<float>(DeltaPos.Y), TangentSettings.SplineVerticalDeltaRange);
+			const FVector2D SplineTangent = (ClampedTensionX * TangentSettings.SplineTangentFromHorizontalDelta + ClampedTensionY * TangentSettings.SplineTangentFromVerticalDelta) * FVector2D(FMath::Sign(DeltaPos.X), FMath::Sign(DeltaPos.Y));
+
 			InterpCurve.Points[Index] = FInterpCurvePoint(InterpT, CurrentPoint, NextArriveTangent, SplineTangent, InterpMode);
-			NextArriveTangent = TangentSettings.bTranspose ? FVector2D(-SplineTangent.Y, -SplineTangent.X) : -SplineTangent;
+			NextArriveTangent = TangentSettings.bTranspose ? FVector2D(-SplineTangent.Y, DeltaPos.X > 0 ? SplineTangent.X : -SplineTangent.X) : FVector2D(SplineTangent.X, -SplineTangent.Y);
 		}
 		else
 		{
 			InterpCurve.Points[Index] = FInterpCurvePoint(InterpT, CurrentPoint, NextArriveTangent, FVector2D::Zero(), InterpMode);
 		}
-	}
-}
-
-FVector2D FALDLineDescriptor::ComputeSplineTangent(const FVector2D& Start, const FVector2D& End, const FALDSplineTangentSettings& Settings)
-{
-	const FVector2D DeltaPos = End - Start;
-	const bool bGoingForward = DeltaPos.X >= 0.0f;
-
-	const float ClampedTensionX = FMath::Min<float>(FMath::Abs<float>(DeltaPos.X), bGoingForward ? Settings.ForwardSplineHorizontalDeltaRange : Settings.BackwardSplineHorizontalDeltaRange);
-	const float ClampedTensionY = FMath::Min<float>(FMath::Abs<float>(DeltaPos.Y), bGoingForward ? Settings.ForwardSplineVerticalDeltaRange : Settings.BackwardSplineVerticalDeltaRange);
-
-	if (bGoingForward)
-	{
-		return (ClampedTensionX * Settings.ForwardSplineTangentFromHorizontalDelta) + (ClampedTensionY * Settings.ForwardSplineTangentFromVerticalDelta);
-	}
-	else
-	{
-		return (ClampedTensionX * Settings.BackwardSplineTangentFromHorizontalDelta) + (ClampedTensionY * Settings.BackwardSplineTangentFromVerticalDelta);
 	}
 }
 
@@ -172,6 +157,7 @@ void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRe
 		if (KeyPoints.Num() > 0)
 		{
 			const float DynamicResolutionScale = LineDescriptor.DynamicResolutionFactor * AllottedGeometry.GetLocalSize().Length();
+			constexpr float DynamicResolutionUnitCube = 512.0f * 512.0f * 512.0f;
 			check(DynamicResolutionScale >= 0);
 			check(LineDescriptor.Resolution > 0);
 			TArray<float, TInlineAllocator<256>> EvalTValues;
@@ -195,8 +181,7 @@ void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRe
 				}
 
 				const float SecondDerivativeSq = LineDescriptor.InterpCurve.EvalSecondDerivative(EvalT).SquaredLength();
-				constexpr float UnitLengthSq = 512.0f * 512.0f;
-				const float DynamicResolution = DynamicResolutionScale * SecondDerivativeSq / UnitLengthSq;
+				const float DynamicResolution = DynamicResolutionScale * SecondDerivativeSq / DynamicResolutionUnitCube;
 				const float Resolution = FMath::Min(LineDescriptor.Resolution + DynamicResolution, LineDescriptor.MaxResolution);
 				EvalT = FMath::Min(EvalT + 1.0f / Resolution, LineDescriptor.InterpCurveEndT);
 			}
