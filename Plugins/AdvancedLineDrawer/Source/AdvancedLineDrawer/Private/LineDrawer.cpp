@@ -3,6 +3,14 @@
 
 #include "LineDrawer.h"
 
+int32 GLineDrawerUpdateNumLineInParallel = 8;
+FAutoConsoleVariableRef CVarLineDrawerUpdateNumLineInParallel(
+	TEXT("r.LineDrawerUpdateNumLineInParallel"),
+	GLineDrawerUpdateNumLineInParallel,
+	TEXT("Min number of lines that will be distributed to each worker thread."),
+	ECVF_Default
+);
+
 int32 FLineDescriptor::AddPoint(const FVector2D& Point, float InterpT, EInterpCurveMode InterpMode, const FVector2D& ArriveTangent, const FVector2D& LeaveTangent)
 {
 	const int32 NewCurvePointIndex = InterpCurve.AddPoint(InterpT, Point);
@@ -107,13 +115,23 @@ int32 ILineDrawer::DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElem
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("DrawLines"), STAT_LineDrawer_DrawLines, STATGROUP_LineDrawer);
 
+	ParallelFor(TEXT("ILineDrawer::DrawLines"), LineDatas.Num(), GLineDrawerUpdateNumLineInParallel, [this, &AllottedGeometry](int32 Index)
+	{
+		FLineData& LineData = LineDatas[Index];
+		UpdateRenderData(LineData.LineDescriptor, LineData.RenderData, AllottedGeometry);
+	});
+
 	for (FLineData& LineData : LineDatas)
 	{
 		FRenderData& RenderData = LineData.RenderData;
-		UpdateRenderData(LineData.LineDescriptor, RenderData, AllottedGeometry);
 		if (RenderData.VertexData.Num() == 0 || RenderData.IndexData.Num() == 0)
 		{
 			continue;
+		}
+
+		if(!RenderData.RenderingResourceHandle.IsValid())
+		{
+			RenderData.RenderingResourceHandle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(LineData.LineDescriptor.Brush);
 		}
 
 		FSlateDrawElement::MakeCustomVerts(OutDrawElements, LayerId, RenderData.RenderingResourceHandle, RenderData.VertexData, RenderData.IndexData, nullptr, 0, 0);
@@ -247,10 +265,5 @@ void ILineDrawer::UpdateRenderData(const FLineDescriptor& LineDescriptor, FRende
 				InOutRenderData.IndexData[IndexDataStartIndex + 5] = SecondVertIndex - 1;
 			}
 		}
-	}
-
-	if(!InOutRenderData.RenderingResourceHandle.IsValid())
-	{
-		InOutRenderData.RenderingResourceHandle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(LineDescriptor.Brush);
 	}
 }
