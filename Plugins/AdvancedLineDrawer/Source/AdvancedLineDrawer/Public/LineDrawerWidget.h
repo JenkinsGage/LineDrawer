@@ -55,11 +55,11 @@ struct FLineWithAutoTangent
 	TEnumAsByte<EInterpCurveMode> InterpMode = CIM_Linear;
 
 	UPROPERTY(EditAnywhere)
-	FALDLineDescriptor LineDescriptor;
+	FLineDescriptor LineDescriptor;
 
 	int32 LineIndex = INDEX_NONE;
 
-	void WritePointsToLineDescriptor(const FALDSplineTangentSettings& TangentSettings = FALDSplineTangentSettings());
+	void WritePointsToLineDescriptor(const FSplineTangentSettings& TangentSettings = FSplineTangentSettings());
 };
 
 /**
@@ -79,7 +79,7 @@ protected:
 	TArray<FLineWithAutoTangent> Lines;
 
 	UPROPERTY(EditAnywhere)
-	FALDSplineTangentSettings AutoTangentSettings;
+	FSplineTangentSettings AutoTangentSettings;
 
 	TSharedPtr<SLineDrawerWidget> MyLineDrawerWidget;
 };

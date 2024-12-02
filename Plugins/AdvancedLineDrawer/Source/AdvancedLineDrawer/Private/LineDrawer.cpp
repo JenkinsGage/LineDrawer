@@ -3,7 +3,15 @@
 
 #include "LineDrawer.h"
 
-int32 FALDLineDescriptor::AddPoint(const FVector2D& Point, float InterpT, EInterpCurveMode InterpMode, const FVector2D& ArriveTangent, const FVector2D& LeaveTangent)
+int32 GLineDrawerParallelismMinBatchSize = 64;
+FAutoConsoleVariableRef CVarLineDrawerParallelismMinBatchSize(
+	TEXT("r.LineDrawerParallelismMinBatchSize"),
+	GLineDrawerParallelismMinBatchSize,
+	TEXT("Min batch size per thread of line drawer parallelism."),
+	ECVF_Default
+);
+
+int32 FLineDescriptor::AddPoint(const FVector2D& Point, float InterpT, EInterpCurveMode InterpMode, const FVector2D& ArriveTangent, const FVector2D& LeaveTangent)
 {
 	const int32 NewCurvePointIndex = InterpCurve.AddPoint(InterpT, Point);
 	auto& NewCurvePoint = InterpCurve.Points[NewCurvePointIndex];
@@ -15,7 +23,7 @@ int32 FALDLineDescriptor::AddPoint(const FVector2D& Point, float InterpT, EInter
 	return NewCurvePointIndex;
 }
 
-void FALDLineDescriptor::SetPointsWithAutoTangents(const TArray<FVector2D>& Points, float InterpStartT, float InterpEndT, EInterpCurveMode InterpMode, const FALDSplineTangentSettings& TangentSettings)
+void FLineDescriptor::SetPointsWithAutoTangents(const TArray<FVector2D>& Points, float InterpStartT, float InterpEndT, EInterpCurveMode InterpMode, const FSplineTangentSettings& TangentSettings)
 {
 	const int32 NumPoints = Points.Num();
 	InterpCurve.Points.SetNumUninitialized(NumPoints);
@@ -42,16 +50,17 @@ void FALDLineDescriptor::SetPointsWithAutoTangents(const TArray<FVector2D>& Poin
 	}
 }
 
-int32 ILineDrawer::AddLine(const FALDLineDescriptor& LineDescriptor)
+int32 ILineDrawer::AddLine(const FLineDescriptor& LineDescriptor)
 {
 	FLineData NewLineData;
 	NewLineData.LineDescriptor = LineDescriptor;
+	NewLineData.RenderData.bNeedReEvalInterpCurve = true;
 
 	GetLineDrawerWidget().Invalidate(EInvalidateWidgetReason::Paint);
 	return LineDatas.Emplace(MoveTemp(NewLineData));
 }
 
-bool ILineDrawer::UpdateLine(int32 LineIndex, TFunctionRef<bool(FALDLineDescriptor& OutLineDescriptor)> Updater)
+bool ILineDrawer::UpdateLine(int32 LineIndex, TFunctionRef<bool(FLineDescriptor& OutLineDescriptor)> Updater)
 {
 	if (!LineDatas.IsValidIndex(LineIndex))
 	{
@@ -61,6 +70,7 @@ bool ILineDrawer::UpdateLine(int32 LineIndex, TFunctionRef<bool(FALDLineDescript
 	FLineData& LineData = LineDatas[LineIndex];
 	if (Updater(LineData.LineDescriptor))
 	{
+		LineData.RenderData.bNeedReEvalInterpCurve = true;
 		GetLineDrawerWidget().Invalidate(EInvalidateWidgetReason::Paint);
 	}
 
@@ -82,7 +92,7 @@ void ILineDrawer::RemoveAllLines()
 	GetLineDrawerWidget().Invalidate(EInvalidateWidgetReason::Paint);
 }
 
-const FALDLineDescriptor* ILineDrawer::GetLine(int32 LineIndex)
+const FLineDescriptor* ILineDrawer::GetLine(int32 LineIndex)
 {
 	if (!LineDatas.IsValidIndex(LineIndex))
 	{
@@ -120,35 +130,11 @@ int32 ILineDrawer::DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElem
 	return LayerId;
 }
 
-void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRenderData& InOutRenderData, const FGeometry& AllottedGeometry)
+void ILineDrawer::UpdateRenderData(const FLineDescriptor& LineDescriptor, FRenderData& InOutRenderData, const FGeometry& AllottedGeometry)
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UpdateRenderData"), STAT_LineDrawer_UpdateRenderData, STATGROUP_LineDrawer);
 
-	const uint32 InterpCurveHash = FCrc::MemCrc32(LineDescriptor.InterpCurve.Points.GetData(), LineDescriptor.InterpCurve.Points.Num() * LineDescriptor.InterpCurve.Points.GetTypeSize());
-	const bool bNeedToReEvalInterpCurve = InterpCurveHash != InOutRenderData.InterpCurveDirtyHash;
-	bool bNeedToUpdateVertexData = bNeedToReEvalInterpCurve;
-	if (bNeedToReEvalInterpCurve)
-	{
-		InOutRenderData.InterpCurveDirtyHash = InterpCurveHash;
-	}
-	else
-	{
-		const uint32 GeometryHash = FCrc::TypeCrc32(AllottedGeometry);
-		const uint32 BrushHash = FCrc::TypeCrc32(LineDescriptor.Brush);
-		const uint32 VertexDataDirtyHash = HashCombine(GeometryHash, BrushHash);
-		bNeedToUpdateVertexData = VertexDataDirtyHash != InOutRenderData.VertexDataDirtyHash;
-		if (bNeedToUpdateVertexData)
-		{
-			InOutRenderData.VertexDataDirtyHash = VertexDataDirtyHash;
-		}
-	}
-
-	if (!bNeedToReEvalInterpCurve && !bNeedToUpdateVertexData)
-	{
-		return;
-	}
-
-	if (bNeedToReEvalInterpCurve)
+	if (InOutRenderData.bNeedReEvalInterpCurve)
 	{
 		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("EvalInterpCurve"), STAT_LineDrawer_EvalInterpCurve, STATGROUP_LineDrawer);
 
@@ -187,7 +173,7 @@ void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRe
 			}
 
 			InOutRenderData.InterpCurveEvalResultCache.SetNumUninitialized(EvalTValues.Num());
-			ParallelFor(EvalTValues.Num(), [&EvalTValues, &LineDescriptor, &InOutRenderData](int32 Index)
+			ParallelFor(TEXT("LineDrawer EvalInterpCurve"), EvalTValues.Num(), GLineDrawerParallelismMinBatchSize, [&EvalTValues, &LineDescriptor, &InOutRenderData](int32 Index)
 			{
 				const float T = EvalTValues[Index];
 				const FVector2D CurvePoint = LineDescriptor.InterpCurve.Eval(T);
@@ -196,9 +182,10 @@ void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRe
 				InOutRenderData.InterpCurveEvalResultCache[Index] = MakeTuple(T, CurvePoint, ScaledNormal);
 			});
 		}
+
+		InOutRenderData.bNeedReEvalInterpCurve = false;
 	}
 
-	if (bNeedToUpdateVertexData)
 	{
 		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UpdateVertexData"), STAT_LineDrawer_UpdateVertexData, STATGROUP_LineDrawer);
 
@@ -220,20 +207,20 @@ void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRe
 
 		const FColor TintColor = LineDescriptor.Brush.TintColor.GetSpecifiedColor().ToFColor(true);
 
-		ParallelFor(InOutRenderData.InterpCurveEvalResultCache.Num(), [&InOutRenderData, &TintColor, &AllottedGeometry, &LineDescriptor, InterpLength](int32 Index)
+		ParallelFor(TEXT("LineDrawer UpdateVertexData"), NumSamples, GLineDrawerParallelismMinBatchSize,[&InOutRenderData, &TintColor, &AllottedGeometry, &LineDescriptor, InterpLength](int32 Index)
 		{
-			TTuple<float, FVector2D, FVector2D>& Sample = InOutRenderData.InterpCurveEvalResultCache[Index];
+			const TTuple<float, FVector2D, FVector2D>& Sample = InOutRenderData.InterpCurveEvalResultCache[Index];
 			const FVector2D VertexPos1 = AllottedGeometry.LocalToAbsolute(Sample.Get<1>() + Sample.Get<2>());
 			const FVector2D VertexPos2 = AllottedGeometry.LocalToAbsolute(Sample.Get<1>() - Sample.Get<2>());
 
 			const float EvalT = Sample.Get<0>();
 			const float CoordinateU = (EvalT - LineDescriptor.InterpCurveStartT) / InterpLength;
+			//TODO: UV Tiling
 			{
 				FSlateVertex& Vert1 = InOutRenderData.VertexData[2 * Index];
 				Vert1.Position[0] = VertexPos1[0];
 				Vert1.Position[1] = VertexPos1[1];
 				Vert1.Color = TintColor;
-				//TODO: UV Tiling
 				Vert1.MaterialTexCoords[0] = CoordinateU;
 				Vert1.MaterialTexCoords[1] = 0.0f;
 				Vert1.TexCoords[0] = CoordinateU;
@@ -248,7 +235,6 @@ void ILineDrawer::UpdateRenderData(const FALDLineDescriptor& LineDescriptor, FRe
 				Vert2.Position[0] = VertexPos2[0];
 				Vert2.Position[1] = VertexPos2[1];
 				Vert2.Color = TintColor;
-				//TODO: UV Tiling
 				Vert2.MaterialTexCoords[0] = CoordinateU;
 				Vert2.MaterialTexCoords[1] = 1.0f;
 				Vert2.TexCoords[0] = CoordinateU;
