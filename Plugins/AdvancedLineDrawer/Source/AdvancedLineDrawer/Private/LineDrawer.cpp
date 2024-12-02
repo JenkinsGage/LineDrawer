@@ -3,14 +3,6 @@
 
 #include "LineDrawer.h"
 
-int32 GLineDrawerParallelismMinBatchSize = 64;
-FAutoConsoleVariableRef CVarLineDrawerParallelismMinBatchSize(
-	TEXT("r.LineDrawerParallelismMinBatchSize"),
-	GLineDrawerParallelismMinBatchSize,
-	TEXT("Min batch size per thread of line drawer parallelism."),
-	ECVF_Default
-);
-
 int32 FLineDescriptor::AddPoint(const FVector2D& Point, float InterpT, EInterpCurveMode InterpMode, const FVector2D& ArriveTangent, const FVector2D& LeaveTangent)
 {
 	const int32 NewCurvePointIndex = InterpCurve.AddPoint(InterpT, Point);
@@ -173,14 +165,14 @@ void ILineDrawer::UpdateRenderData(const FLineDescriptor& LineDescriptor, FRende
 			}
 
 			InOutRenderData.InterpCurveEvalResultCache.SetNumUninitialized(EvalTValues.Num());
-			ParallelFor(TEXT("LineDrawer EvalInterpCurve"), EvalTValues.Num(), GLineDrawerParallelismMinBatchSize, [&EvalTValues, &LineDescriptor, &InOutRenderData](int32 Index)
+			for (int32 Index = 0; Index < EvalTValues.Num(); ++Index)
 			{
 				const float T = EvalTValues[Index];
 				const FVector2D CurvePoint = LineDescriptor.InterpCurve.Eval(T);
 				const FVector2D Tangent = LineDescriptor.InterpCurve.EvalDerivative(T).GetSafeNormal();
 				const FVector2D ScaledNormal = Tangent.GetRotated(90.0f) * LineDescriptor.Thickness;
 				InOutRenderData.InterpCurveEvalResultCache[Index] = MakeTuple(T, CurvePoint, ScaledNormal);
-			});
+			}
 		}
 
 		InOutRenderData.bNeedReEvalInterpCurve = false;
@@ -207,7 +199,7 @@ void ILineDrawer::UpdateRenderData(const FLineDescriptor& LineDescriptor, FRende
 
 		const FColor TintColor = LineDescriptor.Brush.TintColor.GetSpecifiedColor().ToFColor(true);
 
-		ParallelFor(TEXT("LineDrawer UpdateVertexData"), NumSamples, GLineDrawerParallelismMinBatchSize,[&InOutRenderData, &TintColor, &AllottedGeometry, &LineDescriptor, InterpLength](int32 Index)
+		for (int32 Index = 0; Index < NumSamples; ++Index)
 		{
 			const TTuple<float, FVector2D, FVector2D>& Sample = InOutRenderData.InterpCurveEvalResultCache[Index];
 			const FVector2D VertexPos1 = AllottedGeometry.LocalToAbsolute(Sample.Get<1>() + Sample.Get<2>());
@@ -254,7 +246,7 @@ void ILineDrawer::UpdateRenderData(const FLineDescriptor& LineDescriptor, FRende
 				InOutRenderData.IndexData[IndexDataStartIndex + 4] = SecondVertIndex - 2;
 				InOutRenderData.IndexData[IndexDataStartIndex + 5] = SecondVertIndex - 1;
 			}
-		});
+		}
 	}
 
 	if(!InOutRenderData.RenderingResourceHandle.IsValid())
