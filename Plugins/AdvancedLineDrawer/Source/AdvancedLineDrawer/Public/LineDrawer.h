@@ -70,6 +70,7 @@ public:
 	void RemoveAllLines();
 
 	const FLineDescriptor* GetLine(int32 LineIndex);
+	UMaterialInstanceDynamic* GetOrCreateMaterialInstanceOfLine(int32 LineIndex);
 
 protected:
 	virtual SWidget& GetLineDrawerWidget() = 0;

@@ -3,12 +3,19 @@
 
 #include "LineDrawer.h"
 
-int32 GLineDrawerUpdateNumLineInParallel = 8;
-FAutoConsoleVariableRef CVarLineDrawerUpdateNumLineInParallel(
-	TEXT("r.LineDrawerUpdateNumLineInParallel"),
-	GLineDrawerUpdateNumLineInParallel,
+int32 GLineDrawerUpdateLineNumInParallel = 8;
+FAutoConsoleVariableRef CVarLineDrawerUpdateLineNumInParallel(
+	TEXT("r.LineDrawerUpdateLineNumInParallel"),
+	GLineDrawerUpdateLineNumInParallel,
 	TEXT("Min number of lines that will be distributed to each worker thread."),
 	ECVF_Default
+);
+
+bool GLineDrawerForceSingleThread = false;
+FAutoConsoleVariableRef CVarLineDrawerForceSingleThread(
+	TEXT("r.LineDrawerForceSingleThread"),
+	GLineDrawerForceSingleThread,
+	TEXT("If true all the parallelisms of line drawer will be disabled.")
 );
 
 int32 FLineDescriptor::AddPoint(const FVector2D& Point, float InterpT, EInterpCurveMode InterpMode, const FVector2D& ArriveTangent, const FVector2D& LeaveTangent)
@@ -102,6 +109,37 @@ const FLineDescriptor* ILineDrawer::GetLine(int32 LineIndex)
 	return &LineDatas[LineIndex].LineDescriptor;
 }
 
+UMaterialInstanceDynamic* ILineDrawer::GetOrCreateMaterialInstanceOfLine(int32 LineIndex)
+{
+	if (!LineDatas.IsValidIndex(LineIndex))
+	{
+		return nullptr;
+	}
+
+	FLineData& LineData = LineDatas[LineIndex];
+	UObject* ResourceObject = LineData.LineDescriptor.Brush.GetResourceObject();
+	if (!ResourceObject)
+	{
+		return nullptr;
+	}
+
+	UMaterialInterface* Material = Cast<UMaterialInterface>(ResourceObject);
+	if (!Material)
+	{
+		return nullptr;
+	}
+
+	if (UMaterialInstanceDynamic* ExistingMID = Cast<UMaterialInstanceDynamic>(Material))
+	{
+		return ExistingMID;
+	}
+
+	UMaterialInstanceDynamic* NewMID = UMaterialInstanceDynamic::Create(Material, nullptr);
+	LineData.LineDescriptor.Brush.SetResourceObject(NewMID);
+	LineData.RenderData.RenderingResourceHandle = FSlateApplication::Get().GetRenderer()->GetResourceHandle(LineData.LineDescriptor.Brush);
+	return NewMID;
+}
+
 void ILineDrawer::AddLineDrawerReferencedObjects(FReferenceCollector& Collector) const
 {
 	for (FLineData& LineData : LineDatas)
@@ -115,11 +153,11 @@ int32 ILineDrawer::DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElem
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("DrawLines"), STAT_LineDrawer_DrawLines, STATGROUP_LineDrawer);
 
-	ParallelFor(TEXT("ILineDrawer::DrawLines"), LineDatas.Num(), GLineDrawerUpdateNumLineInParallel, [this, &AllottedGeometry](int32 Index)
+	ParallelFor(TEXT("ILineDrawer::DrawLines"), LineDatas.Num(), GLineDrawerUpdateLineNumInParallel, [this, &AllottedGeometry](int32 Index)
 	{
 		FLineData& LineData = LineDatas[Index];
 		UpdateRenderData(LineData.LineDescriptor, LineData.RenderData, AllottedGeometry);
-	});
+	}, GLineDrawerForceSingleThread ? EParallelForFlags::ForceSingleThread : EParallelForFlags::None);
 
 	for (FLineData& LineData : LineDatas)
 	{
@@ -156,7 +194,7 @@ void ILineDrawer::UpdateRenderData(const FLineDescriptor& LineDescriptor, FRende
 			constexpr float DynamicResolutionUnitCube = 512.0f * 512.0f * 512.0f;
 			check(DynamicResolutionScale >= 0);
 			check(LineDescriptor.Resolution > 0);
-			TArray<float, TInlineAllocator<256>> EvalTValues;
+			TArray<float, TInlineAllocator<64>> EvalTValues;
 
 			float EvalT = LineDescriptor.InterpCurveStartT;
 			int32 SmallestKeyPointIndex;
@@ -164,10 +202,33 @@ void ILineDrawer::UpdateRenderData(const FLineDescriptor& LineDescriptor, FRende
 
 			while (EvalT <= LineDescriptor.InterpCurveEndT)
 			{
-				if (KeyPoints.IsValidIndex(SmallestKeyPointIndex) && EvalT > KeyPoints[SmallestKeyPointIndex].InVal)
+				if (KeyPoints.IsValidIndex(SmallestKeyPointIndex))
 				{
-					EvalT = KeyPoints[SmallestKeyPointIndex].InVal;
-					++SmallestKeyPointIndex;
+					auto& KeyPoint = KeyPoints[SmallestKeyPointIndex];
+					const float KeyT = KeyPoint.InVal;
+					if (EvalT == KeyT)
+					{
+						++SmallestKeyPointIndex;
+						if (KeyPoint.InterpMode == CIM_Linear)
+						{
+							EvalTValues.Add(EvalT);
+							if (KeyPoints.IsValidIndex(SmallestKeyPointIndex))
+							{
+								EvalT = KeyPoints[SmallestKeyPointIndex].InVal;
+							}
+							else if (EvalT == LineDescriptor.InterpCurveEndT)
+							{
+								break;
+							}
+
+							continue;
+						}
+					}
+					else if (EvalT > KeyT)
+					{
+						EvalT = KeyPoints[SmallestKeyPointIndex].InVal;
+						++SmallestKeyPointIndex;
+					}
 				}
 
 				EvalTValues.Add(EvalT);
