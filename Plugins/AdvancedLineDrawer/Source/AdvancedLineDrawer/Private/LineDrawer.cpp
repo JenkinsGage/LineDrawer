@@ -18,7 +18,34 @@ FAutoConsoleVariableRef CVarLineDrawerForceSingleThread(
 	TEXT("If true all the parallelisms of line drawer will be disabled.")
 );
 
-int32 FLineDescriptor::AddPoint(const FVector2D& Point, float InterpT, EInterpCurveMode InterpMode, const FVector2D& ArriveTangent, const FVector2D& LeaveTangent)
+void FLineDescriptor::SetCurvePointsWithAutoTangents(const TArray<FVector2f>& Points, float InterpStartT, float InterpEndT, EInterpCurveMode InterpMode, const FSplineTangentSettings& TangentSettings)
+{
+	const int32 NumPoints = Points.Num();
+	InterpCurve.Points.SetNumUninitialized(NumPoints);
+	FVector2f NextArriveTangent = FVector2f::Zero();
+	for (int32 Index = 0; Index < NumPoints; ++Index)
+	{
+		const FVector2f& CurrentPoint = Points[Index];
+		const float InterpT = FMath::Lerp(InterpStartT, InterpEndT, NumPoints > 1 ? static_cast<float>(Index) / (NumPoints - 1) : 1.0f);
+
+		if (Index < NumPoints - 1)
+		{
+			const FVector2f DeltaPos = Points[Index + 1] - CurrentPoint;
+			const float ClampedTensionX = FMath::Min<float>(FMath::Abs<float>(DeltaPos.X), TangentSettings.SplineHorizontalDeltaRange);
+			const float ClampedTensionY = FMath::Min<float>(FMath::Abs<float>(DeltaPos.Y), TangentSettings.SplineVerticalDeltaRange);
+			const FVector2f SplineTangent = (ClampedTensionX * TangentSettings.SplineTangentFromHorizontalDelta + ClampedTensionY * TangentSettings.SplineTangentFromVerticalDelta) * FVector2f(FMath::Sign(DeltaPos.X), FMath::Sign(DeltaPos.Y));
+
+			InterpCurve.Points[Index] = FInterpCurvePoint(InterpT, CurrentPoint, NextArriveTangent, SplineTangent, InterpMode);
+			NextArriveTangent = TangentSettings.bTranspose ? FVector2f(-SplineTangent.Y, DeltaPos.X > 0 ? SplineTangent.X : -SplineTangent.X) : FVector2f(SplineTangent.X, -SplineTangent.Y);
+		}
+		else
+		{
+			InterpCurve.Points[Index] = FInterpCurvePoint(InterpT, CurrentPoint, NextArriveTangent, FVector2f::Zero(), InterpMode);
+		}
+	}
+}
+
+int32 FLineDescriptor::AddPoint(const FVector2f& Point, float InterpT, EInterpCurveMode InterpMode, const FVector2f& ArriveTangent, const FVector2f& LeaveTangent)
 {
 	const int32 NewCurvePointIndex = InterpCurve.AddPoint(InterpT, Point);
 	auto& NewCurvePoint = InterpCurve.Points[NewCurvePointIndex];
@@ -30,38 +57,11 @@ int32 FLineDescriptor::AddPoint(const FVector2D& Point, float InterpT, EInterpCu
 	return NewCurvePointIndex;
 }
 
-void FLineDescriptor::SetPointsWithAutoTangents(const TArray<FVector2D>& Points, float InterpStartT, float InterpEndT, EInterpCurveMode InterpMode, const FSplineTangentSettings& TangentSettings)
-{
-	const int32 NumPoints = Points.Num();
-	InterpCurve.Points.SetNumUninitialized(NumPoints);
-	FVector2D NextArriveTangent = FVector2D::Zero();
-	for (int32 Index = 0; Index < NumPoints; ++Index)
-	{
-		const FVector2D& CurrentPoint = Points[Index];
-		const float InterpT = FMath::Lerp(InterpStartT, InterpEndT, NumPoints > 1 ? static_cast<float>(Index) / (NumPoints - 1) : 1.0f);
-
-		if (Index < NumPoints - 1)
-		{
-			const FVector2D DeltaPos = Points[Index + 1] - CurrentPoint;
-			const float ClampedTensionX = FMath::Min<float>(FMath::Abs<float>(DeltaPos.X), TangentSettings.SplineHorizontalDeltaRange);
-			const float ClampedTensionY = FMath::Min<float>(FMath::Abs<float>(DeltaPos.Y), TangentSettings.SplineVerticalDeltaRange);
-			const FVector2D SplineTangent = (ClampedTensionX * TangentSettings.SplineTangentFromHorizontalDelta + ClampedTensionY * TangentSettings.SplineTangentFromVerticalDelta) * FVector2D(FMath::Sign(DeltaPos.X), FMath::Sign(DeltaPos.Y));
-
-			InterpCurve.Points[Index] = FInterpCurvePoint(InterpT, CurrentPoint, NextArriveTangent, SplineTangent, InterpMode);
-			NextArriveTangent = TangentSettings.bTranspose ? FVector2D(-SplineTangent.Y, DeltaPos.X > 0 ? SplineTangent.X : -SplineTangent.X) : FVector2D(SplineTangent.X, -SplineTangent.Y);
-		}
-		else
-		{
-			InterpCurve.Points[Index] = FInterpCurvePoint(InterpT, CurrentPoint, NextArriveTangent, FVector2D::Zero(), InterpMode);
-		}
-	}
-}
-
 int32 ILineDrawer::AddLine(const FLineDescriptor& LineDescriptor)
 {
 	FLineData NewLineData;
 	NewLineData.LineDescriptor = LineDescriptor;
-	NewLineData.RenderData.bNeedReEvalInterpCurve = true;
+	NewLineData.bNeedReEvalInterpCurve = true;
 
 	GetLineDrawerWidget().Invalidate(EInvalidateWidgetReason::Paint);
 	return LineDatas.Emplace(MoveTemp(NewLineData));
@@ -77,7 +77,7 @@ bool ILineDrawer::UpdateLine(int32 LineIndex, TFunctionRef<bool(FLineDescriptor&
 	FLineData& LineData = LineDatas[LineIndex];
 	if (Updater(LineData.LineDescriptor))
 	{
-		LineData.RenderData.bNeedReEvalInterpCurve = true;
+		LineData.bNeedReEvalInterpCurve = true;
 		GetLineDrawerWidget().Invalidate(EInvalidateWidgetReason::Paint);
 	}
 
@@ -97,6 +97,18 @@ void ILineDrawer::RemoveAllLines()
 {
 	LineDatas.Empty();
 	GetLineDrawerWidget().Invalidate(EInvalidateWidgetReason::Paint);
+}
+
+TArray<int32> ILineDrawer::GetAllLines() const
+{
+	TArray<int32> Indexes;
+	Indexes.Reserve(LineDatas.Num());
+	for (auto It = LineDatas.CreateConstIterator(); It; ++It)
+	{
+		Indexes.Add(It.GetIndex());
+	}
+
+	return Indexes;
 }
 
 const FLineDescriptor* ILineDrawer::GetLine(int32 LineIndex)
@@ -155,8 +167,7 @@ int32 ILineDrawer::DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElem
 
 	ParallelFor(TEXT("ILineDrawer::DrawLines"), LineDatas.Num(), GLineDrawerUpdateLineNumInParallel, [this, &AllottedGeometry](int32 Index)
 	{
-		FLineData& LineData = LineDatas[Index];
-		UpdateRenderData(LineData.LineDescriptor, LineData.RenderData, AllottedGeometry);
+		UpdateLineRenderData(LineDatas[Index], AllottedGeometry);
 	}, GLineDrawerForceSingleThread ? EParallelForFlags::ForceSingleThread : EParallelForFlags::None);
 
 	for (FLineData& LineData : LineDatas)
@@ -178,15 +189,16 @@ int32 ILineDrawer::DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElem
 	return LayerId;
 }
 
-void ILineDrawer::UpdateRenderData(const FLineDescriptor& LineDescriptor, FRenderData& InOutRenderData, const FGeometry& AllottedGeometry)
+void ILineDrawer::UpdateLineRenderData(FLineData& InOutLineData, const FGeometry& AllottedGeometry)
 {
-	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UpdateRenderData"), STAT_LineDrawer_UpdateRenderData, STATGROUP_LineDrawer);
+	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UpdateLineRenderData"), STAT_LineDrawer_UpdateLineRenderData, STATGROUP_LineDrawer);
 
-	if (InOutRenderData.bNeedReEvalInterpCurve)
+	if (InOutLineData.bNeedReEvalInterpCurve)
 	{
 		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("EvalInterpCurve"), STAT_LineDrawer_EvalInterpCurve, STATGROUP_LineDrawer);
 
-		InOutRenderData.InterpCurveEvalResultCache.Reset();
+		InOutLineData.InterpCurveSamplePoints.Reset();
+		auto& LineDescriptor = InOutLineData.LineDescriptor;
 		auto& KeyPoints = LineDescriptor.InterpCurve.Points;
 		if (KeyPoints.Num() > 0)
 		{
@@ -243,88 +255,171 @@ void ILineDrawer::UpdateRenderData(const FLineDescriptor& LineDescriptor, FRende
 				EvalT = FMath::Min(EvalT + 1.0f / Resolution, LineDescriptor.InterpCurveEndT);
 			}
 
-			InOutRenderData.InterpCurveEvalResultCache.SetNumUninitialized(EvalTValues.Num());
+			InOutLineData.InterpCurveSamplePoints.SetNumUninitialized(EvalTValues.Num());
 			for (int32 Index = 0; Index < EvalTValues.Num(); ++Index)
 			{
-				const float T = EvalTValues[Index];
-				const FVector2D CurvePoint = LineDescriptor.InterpCurve.Eval(T);
-				const FVector2D Tangent = LineDescriptor.InterpCurve.EvalDerivative(T).GetSafeNormal();
-				const FVector2D ScaledNormal = Tangent.GetRotated(90.0f) * LineDescriptor.Thickness;
-				InOutRenderData.InterpCurveEvalResultCache[Index] = MakeTuple(T, CurvePoint, ScaledNormal);
+				const FVector2f CurvePoint = LineDescriptor.InterpCurve.Eval(EvalTValues[Index]);
+				InOutLineData.InterpCurveSamplePoints[Index] = CurvePoint;
 			}
 		}
 
-		InOutRenderData.bNeedReEvalInterpCurve = false;
+		InOutLineData.bNeedReEvalInterpCurve = false;
 	}
 
 	{
-		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UpdateVertexData"), STAT_LineDrawer_UpdateVertexData, STATGROUP_LineDrawer);
+		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("BuildLineVertexData"), STAT_LineDrawer_BuildLineVertexData, STATGROUP_LineDrawer);
 
-		const int32 NumSamples = InOutRenderData.InterpCurveEvalResultCache.Num();
-		if (NumSamples <= 1)
-		{
-			InOutRenderData.VertexData.Empty();
-			InOutRenderData.IndexData.Empty();
-			return;
-		}
-		float InterpLength = LineDescriptor.InterpCurveEndT - LineDescriptor.InterpCurveStartT;
-		if (InterpLength <= 0)
+		auto& RenderData = InOutLineData.RenderData;
+		RenderData.VertexData.Reset();
+		RenderData.IndexData.Reset();
+		const int32 NumSamples = InOutLineData.InterpCurveSamplePoints.Num();
+		if (NumSamples < 2)
 		{
 			return;
 		}
 
-		InOutRenderData.VertexData.SetNumUninitialized(2 * NumSamples);
-		InOutRenderData.IndexData.SetNumUninitialized(6 * (NumSamples - 1));
-
-		const FColor TintColor = LineDescriptor.Brush.TintColor.GetSpecifiedColor().ToFColor(true);
-
-		for (int32 Index = 0; Index < NumSamples; ++Index)
-		{
-			const TTuple<float, FVector2D, FVector2D>& Sample = InOutRenderData.InterpCurveEvalResultCache[Index];
-			const FVector2D VertexPos1 = AllottedGeometry.LocalToAbsolute(Sample.Get<1>() + Sample.Get<2>());
-			const FVector2D VertexPos2 = AllottedGeometry.LocalToAbsolute(Sample.Get<1>() - Sample.Get<2>());
-
-			const float EvalT = Sample.Get<0>();
-			const float CoordinateU = (EvalT - LineDescriptor.InterpCurveStartT) / InterpLength;
-			//TODO: UV Tiling
-			{
-				FSlateVertex& Vert1 = InOutRenderData.VertexData[2 * Index];
-				Vert1.Position[0] = VertexPos1[0];
-				Vert1.Position[1] = VertexPos1[1];
-				Vert1.Color = TintColor;
-				Vert1.MaterialTexCoords[0] = CoordinateU;
-				Vert1.MaterialTexCoords[1] = 0.0f;
-				Vert1.TexCoords[0] = CoordinateU;
-				Vert1.TexCoords[1] = 0.0f;
-				Vert1.TexCoords[2] = CoordinateU;
-				Vert1.TexCoords[3] = 0.0f;
-			}
-
-			const int32 SecondVertIndex = 2 * Index + 1;
-			{
-				FSlateVertex& Vert2 = InOutRenderData.VertexData[SecondVertIndex];
-				Vert2.Position[0] = VertexPos2[0];
-				Vert2.Position[1] = VertexPos2[1];
-				Vert2.Color = TintColor;
-				Vert2.MaterialTexCoords[0] = CoordinateU;
-				Vert2.MaterialTexCoords[1] = 1.0f;
-				Vert2.TexCoords[0] = CoordinateU;
-				Vert2.TexCoords[1] = 1.0f;
-				Vert2.TexCoords[2] = CoordinateU;
-				Vert2.TexCoords[3] = 1.0f;
-			}
-
-			if (Index > 0)
-			{
-				const int32 IndexDataStartIndex = 6 * (Index - 1);
-				InOutRenderData.IndexData[IndexDataStartIndex] = SecondVertIndex - 2;
-				InOutRenderData.IndexData[IndexDataStartIndex + 1] = SecondVertIndex - 1;
-				InOutRenderData.IndexData[IndexDataStartIndex + 2] = SecondVertIndex;
-
-				InOutRenderData.IndexData[IndexDataStartIndex + 3] = SecondVertIndex - 3;
-				InOutRenderData.IndexData[IndexDataStartIndex + 4] = SecondVertIndex - 2;
-				InOutRenderData.IndexData[IndexDataStartIndex + 5] = SecondVertIndex - 1;
-			}
-		}
+		FPaintGeometry PaintGeometry = AllottedGeometry.ToPaintGeometry();
+		constexpr float AntiAliasingFilterRadius = 2.0f;
+		constexpr float MiterAngleLimit = 90.0f - KINDA_SMALL_NUMBER;
+		FLineBuilder LineBuilder(RenderData, PaintGeometry.GetAccumulatedRenderTransform(), PaintGeometry.DrawScale, InOutLineData.LineDescriptor.Thickness, AntiAliasingFilterRadius, MiterAngleLimit);
+		FColor TintColor = InOutLineData.LineDescriptor.Brush.TintColor.GetSpecifiedColor().ToFColor(true);
+		LineBuilder.BuildLineGeometry(InOutLineData.InterpCurveSamplePoints, TintColor, ESlateVertexRounding::Enabled);
 	}
+}
+
+ILineDrawer::FLineBuilder::FLineBuilder(FRenderData& RenderData, const FSlateRenderTransform& RenderTransform, float ElementScale, float HalfThickness, float FilterRadius, float MiterAngleLimit) :
+	RenderData(RenderData),
+	RenderTransform(RenderTransform),
+	LocalHalfThickness((HalfThickness + FilterRadius) / ElementScale),
+	LocalFilterRadius(FilterRadius / ElementScale),
+	LocalCapLength((FilterRadius / ElementScale) * 2.0f),
+	AngleCosineLimit(FMath::DegreesToRadians((180.0f - MiterAngleLimit) * 0.5f))
+{
+}
+
+void ILineDrawer::FLineBuilder::BuildLineGeometry(const TArray<FVector2f>& Points, const FColor& PointColor, ESlateVertexRounding Rounding)
+{
+	check(Points.Num() >= 2);
+	FVector2f Position = Points[0];
+	FVector2f NextPosition = Points[1];
+
+	FVector2f Direction;
+	float Length;
+
+	(NextPosition - Position).ToDirectionAndLength(Direction, Length);
+	FVector2f Up = Direction.GetRotated(90.0f) * LocalHalfThickness;
+	PositionAlongLine = 0.0f;
+
+	MakeStartCap(Position, Direction, Length, Up, PointColor, Rounding);
+
+	PositionAlongLine += Length;
+
+	const int32 LastPointIndex = Points.Num() - 1;
+	for (int32 Point = 1; Point < LastPointIndex; ++Point)
+	{
+		const FVector2f LastDirection = Direction;
+		const FVector2f LastUp = Up;
+		const float LastLength = Length;
+
+		Position = NextPosition;
+		NextPosition = Points[Point + 1];
+
+		(NextPosition - Position).ToDirectionAndLength(Direction, Length);
+		Up = Direction.GetRotated(90.0f) * LocalHalfThickness;
+
+		const FVector2f MiterNormal = GetMiterNormal(LastDirection, Direction);
+		const float DistanceToMiterLine = FVector2f::DotProduct(Up, MiterNormal);
+
+		const float DirDotMiterNormal = FVector2f::DotProduct(Direction, MiterNormal);
+		const float MinSegmentLength = FMath::Min(LastLength, Length);
+
+		if (MinSegmentLength > SMALL_NUMBER && DirDotMiterNormal >= AngleCosineLimit && (MinSegmentLength * 0.5f * DirDotMiterNormal) >= FMath::Abs(DistanceToMiterLine))
+		{
+			const float ParallelDistance = DistanceToMiterLine / DirDotMiterNormal;
+			const FVector2f MiterUp = Up - (Direction * ParallelDistance);
+
+			const float MiterOffset = FVector2f::DotProduct(Direction, MiterUp);
+			RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + MiterUp), FVector2f(1.0f, 0.0f),
+			                                                 FVector2f(PositionAlongLine - MiterOffset, 0.0f), PointColor, {}, Rounding));
+			RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position - MiterUp), FVector2f(-1.0f, 0.0f),
+			                                                 FVector2f(PositionAlongLine + MiterOffset, 0.0f), PointColor, {}, Rounding));
+			AddQuadIndices(RenderData);
+		}
+		else
+		{
+			MakeEndCap(Position, LastDirection, LastLength, LastUp, PointColor, Rounding);
+			MakeStartCap(Position, Direction, Length, Up, PointColor, Rounding);
+		}
+
+		PositionAlongLine += Length;
+	}
+
+	MakeEndCap(NextPosition, Direction, Length, Up, PointColor, Rounding);
+}
+
+void ILineDrawer::FLineBuilder::MakeStartCap(const FVector2f Position, const FVector2f Direction, float SegmentLength, const FVector2f Up, const FColor& Color, ESlateVertexRounding Rounding)
+{
+	if (SegmentLength > SMALL_NUMBER)
+	{
+		const float InwardDistance = FMath::Min(LocalFilterRadius, SegmentLength * 0.5f);
+		const float OutwardDistance = (InwardDistance - LocalCapLength);
+		const FVector2f CapInward = Direction * InwardDistance;
+		const FVector2f CapOutward = Direction * OutwardDistance;
+
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward + Up), FVector2f(1.0f, -1.0f), FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward - Up), FVector2f(-1.0f, -1.0f), FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward + Up), FVector2f(1.0f, 0.0f), FVector2f(PositionAlongLine + InwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward - Up), FVector2f(-1.0f, 0.0f), FVector2f(PositionAlongLine + InwardDistance, 0.0f), Color, {}, Rounding));
+		AddQuadIndices(RenderData);
+	}
+}
+
+void ILineDrawer::FLineBuilder::MakeEndCap(const FVector2f Position, const FVector2f Direction, float SegmentLength, const FVector2f Up, const FColor& Color, ESlateVertexRounding Rounding)
+{
+	if (SegmentLength > SMALL_NUMBER)
+	{
+		const float InwardDistance = FMath::Min(LocalFilterRadius, SegmentLength * 0.5f);
+		const float OutwardDistance = (InwardDistance - LocalCapLength);
+		const FVector2f CapInward = Direction * -InwardDistance;
+		const FVector2f CapOutward = Direction * OutwardDistance;
+
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward + Up), FVector2f(1.0f, 0.0f), FVector2f(PositionAlongLine - InwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward - Up), FVector2f(-1.0f, 0.0f), FVector2f(PositionAlongLine - InwardDistance, 0.0f), Color, {}, Rounding));
+		AddQuadIndices(RenderData);
+
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward + Up), FVector2f(1.0f, 1.0f), FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward - Up), FVector2f(-1.0f, 1.0f), FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
+		AddQuadIndices(RenderData);
+	}
+}
+
+void ILineDrawer::FLineBuilder::AddQuadIndices(FRenderData& InRenderData)
+{
+	const int32 NumVerts = InRenderData.VertexData.Num();
+
+	auto IndexQuad = [](FRenderData& InRenderData, int32 TopLeft, int32 TopRight, int32 BottomRight, int32 BottomLeft)
+	{
+		InRenderData.IndexData.Emplace(TopLeft);
+		InRenderData.IndexData.Emplace(TopRight);
+		InRenderData.IndexData.Emplace(BottomRight);
+
+		InRenderData.IndexData.Emplace(BottomRight);
+		InRenderData.IndexData.Emplace(BottomLeft);
+		InRenderData.IndexData.Emplace(TopLeft);
+	};
+
+	IndexQuad(InRenderData, NumVerts - 3, NumVerts - 1, NumVerts - 2, NumVerts - 4);
+}
+
+FVector2f ILineDrawer::FLineBuilder::GetMiterNormal(const FVector2f InboundSegmentDir, const FVector2f OutboundSegmentDir)
+{
+	const FVector2f DirSum = InboundSegmentDir + OutboundSegmentDir;
+	const float SizeSquared = DirSum.SizeSquared();
+
+	if (SizeSquared > SMALL_NUMBER)
+	{
+		return DirSum * FMath::InvSqrt(SizeSquared);
+	}
+
+	return InboundSegmentDir.GetRotated(90.0f);
 }

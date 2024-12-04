@@ -43,7 +43,7 @@ struct FLineWithAutoTangent
 	GENERATED_BODY()
 
 	UPROPERTY(EditAnywhere)
-	TArray<FVector2D> Points;
+	TArray<FVector2f> Points;
 
 	UPROPERTY(EditAnywhere)
 	float InterpStartT = 0.0f;

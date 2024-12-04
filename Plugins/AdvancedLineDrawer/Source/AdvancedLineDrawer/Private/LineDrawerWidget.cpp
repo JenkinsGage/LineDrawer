@@ -33,7 +33,7 @@ FVector2D SLineDrawerWidget::ComputeDesiredSize(float) const
 
 void FLineWithAutoTangent::WritePointsToLineDescriptor(const FSplineTangentSettings& TangentSettings)
 {
-	LineDescriptor.SetPointsWithAutoTangents(Points, InterpStartT, InterpEndT, InterpMode, TangentSettings);
+	LineDescriptor.SetCurvePointsWithAutoTangents(Points, InterpStartT, InterpEndT, InterpMode, TangentSettings);
 }
 
 TSharedRef<SWidget> ULineDrawerWidget::RebuildWidget()
