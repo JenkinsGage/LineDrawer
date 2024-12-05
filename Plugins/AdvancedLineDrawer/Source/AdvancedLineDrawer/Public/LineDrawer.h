@@ -102,9 +102,9 @@ private:
 
 	struct FLineBuilder
 	{
-		FLineBuilder(FRenderData& RenderData, const FSlateRenderTransform& RenderTransform, float ElementScale, float HalfThickness, float FilterRadius, float MiterAngleLimit, float LineLength);
+		FLineBuilder(FRenderData& RenderData, const FSlateRenderTransform& RenderTransform, float ElementScale, float HalfThickness, float FilterRadius, float MiterAngleLimit);
 
-		void BuildLineGeometry(const TArray<FVector2f>& Points, const FColor& PointColor, ESlateVertexRounding Rounding);
+		void BuildLineGeometry(const TArray<FVector2f>& Points, float InLineLength, const FColor& PointColor, ESlateVertexRounding Rounding);
 		void MakeStartCap(const FVector2f Position, const FVector2f Direction, float SegmentLength, const FVector2f Up, const FColor& Color, ESlateVertexRounding Rounding);
 		void MakeEndCap(const FVector2f Position, const FVector2f Direction, float SegmentLength, const FVector2f Up, const FColor& Color, ESlateVertexRounding Rounding);
 

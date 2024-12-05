@@ -170,14 +170,16 @@ DECLARE_STATS_GROUP(TEXT("LineDrawer"), STATGROUP_LineDrawer, STATCAT_Advanced);
 int32 ILineDrawer::DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElementList& OutDrawElements, int32 LayerId) const
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("DrawLines"), STAT_LineDrawer_DrawLines, STATGROUP_LineDrawer);
+	TRACE_CPUPROFILER_EVENT_SCOPE(ILineDrawer::DrawLines);
 
-	ParallelFor(TEXT("ILineDrawer::DrawLines"), LineDatas.Num(), GLineDrawerUpdateLineNumInParallel, [this, &AllottedGeometry](int32 Index)
+	ParallelFor(TEXT("ILineDrawer::ParallelUpdateLineRenderData"), LineDatas.Num(), GLineDrawerUpdateLineNumInParallel, [this, &AllottedGeometry](int32 Index)
 	{
 		UpdateLineRenderData(LineDatas[Index], AllottedGeometry);
 	}, GLineDrawerForceSingleThread ? EParallelForFlags::ForceSingleThread : EParallelForFlags::None);
 
 	for (FLineData& LineData : LineDatas)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(ILineDrawer::DrawLines::DrawElements);
 		FRenderData& RenderData = LineData.RenderData;
 		if (RenderData.VertexData.Num() == 0 || RenderData.IndexData.Num() == 0)
 		{
@@ -197,13 +199,12 @@ int32 ILineDrawer::DrawLines(const FGeometry& AllottedGeometry, FSlateWindowElem
 
 void ILineDrawer::UpdateLineRenderData(FLineData& InOutLineData, const FGeometry& AllottedGeometry)
 {
-	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UpdateLineRenderData"), STAT_LineDrawer_UpdateLineRenderData, STATGROUP_LineDrawer);
+	TRACE_CPUPROFILER_EVENT_SCOPE(ILineDrawer::UpdateLineRenderData);
 
 	auto& LineDescriptor = InOutLineData.LineDescriptor;
 	if (InOutLineData.bNeedReEvalInterpCurve)
 	{
-		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("EvalInterpCurve"), STAT_LineDrawer_EvalInterpCurve, STATGROUP_LineDrawer);
-
+		TRACE_CPUPROFILER_EVENT_SCOPE(ILineDrawer::UpdateLineRenderData::EvalInterpCurve);
 		InOutLineData.InterpCurveSamplePoints.Reset();
 		auto& KeyPoints = LineDescriptor.InterpCurve.Points;
 		if (KeyPoints.Num() > 0)
@@ -281,13 +282,11 @@ void ILineDrawer::UpdateLineRenderData(FLineData& InOutLineData, const FGeometry
 	}
 
 	{
-		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("BuildLineVertexData"), STAT_LineDrawer_BuildLineVertexData, STATGROUP_LineDrawer);
-
 		auto& RenderData = InOutLineData.RenderData;
 		RenderData.VertexData.Reset();
 		RenderData.IndexData.Reset();
 		const int32 NumSamples = InOutLineData.InterpCurveSamplePoints.Num();
-		if (NumSamples < 2)
+		if (NumSamples < 2 || InOutLineData.LineLength <= KINDA_SMALL_NUMBER)
 		{
 			return;
 		}
@@ -295,96 +294,112 @@ void ILineDrawer::UpdateLineRenderData(FLineData& InOutLineData, const FGeometry
 		FPaintGeometry PaintGeometry = AllottedGeometry.ToPaintGeometry();
 		constexpr float AntiAliasingFilterRadius = 2.0f;
 		constexpr float MiterAngleLimit = 90.0f - KINDA_SMALL_NUMBER;
-		FLineBuilder LineBuilder(RenderData, PaintGeometry.GetAccumulatedRenderTransform(), PaintGeometry.DrawScale, LineDescriptor.Thickness, AntiAliasingFilterRadius, MiterAngleLimit, InOutLineData.LineLength);
+		FLineBuilder LineBuilder(RenderData, PaintGeometry.GetAccumulatedRenderTransform(), PaintGeometry.DrawScale, LineDescriptor.Thickness, AntiAliasingFilterRadius, MiterAngleLimit);
 		FColor TintColor = LineDescriptor.Brush.TintColor.GetSpecifiedColor().ToFColor(true);
-		LineBuilder.BuildLineGeometry(InOutLineData.InterpCurveSamplePoints, TintColor, ESlateVertexRounding::Enabled);
+		LineBuilder.BuildLineGeometry(InOutLineData.InterpCurveSamplePoints, InOutLineData.LineLength, TintColor, ESlateVertexRounding::Enabled);
 	}
 }
 
-ILineDrawer::FLineBuilder::FLineBuilder(FRenderData& RenderData, const FSlateRenderTransform& RenderTransform, float ElementScale, float HalfThickness, float FilterRadius, float MiterAngleLimit, float LineLength) :
+ILineDrawer::FLineBuilder::FLineBuilder(FRenderData& RenderData, const FSlateRenderTransform& RenderTransform, float ElementScale, float HalfThickness, float FilterRadius, float MiterAngleLimit) :
 	RenderData(RenderData),
 	RenderTransform(RenderTransform),
 	LocalHalfThickness((HalfThickness + FilterRadius) / ElementScale),
 	LocalFilterRadius(FilterRadius / ElementScale),
 	LocalCapLength((FilterRadius / ElementScale) * 2.0f),
-	AngleCosineLimit(FMath::DegreesToRadians((180.0f - MiterAngleLimit) * 0.5f)),
-	LineLength(LineLength)
+	AngleCosineLimit(FMath::DegreesToRadians((180.0f - MiterAngleLimit) * 0.5f))
 {
 }
 
-void ILineDrawer::FLineBuilder::BuildLineGeometry(const TArray<FVector2f>& Points, const FColor& PointColor, ESlateVertexRounding Rounding)
+void ILineDrawer::FLineBuilder::BuildLineGeometry(const TArray<FVector2f>& Points, float InLineLength, const FColor& PointColor, ESlateVertexRounding Rounding)
 {
+	TRACE_CPUPROFILER_EVENT_SCOPE(ILineDrawer::FLineBuilder::BuildLineGeometry);
+
 	check(Points.Num() >= 2);
+	check(InLineLength > KINDA_SMALL_NUMBER);
+
+	LineLength = InLineLength;
 	FVector2f Position = Points[0];
 	FVector2f NextPosition = Points[1];
 
-	FVector2f Direction;
-	float Length;
+	FVector2f SegDirection;
+	float SegLength;
 
-	(NextPosition - Position).ToDirectionAndLength(Direction, Length);
-	FVector2f Up = Direction.GetRotated(90.0f) * LocalHalfThickness;
+	(NextPosition - Position).ToDirectionAndLength(SegDirection, SegLength);
+	FVector2f Up = SegDirection.GetRotated(90.0f) * LocalHalfThickness;
 	PositionAlongLine = 0.0f;
 
-	MakeStartCap(Position, Direction, Length, Up, PointColor, Rounding);
+	MakeStartCap(Position, SegDirection, SegLength, Up, PointColor, Rounding);
 
-	PositionAlongLine += Length;
+	PositionAlongLine += SegLength;
 
 	const int32 LastPointIndex = Points.Num() - 1;
 	for (int32 Point = 1; Point < LastPointIndex; ++Point)
 	{
-		const FVector2f LastDirection = Direction;
+		const FVector2f LastDirection = SegDirection;
 		const FVector2f LastUp = Up;
-		const float LastLength = Length;
+		const float LastLength = SegLength;
 
 		Position = NextPosition;
 		NextPosition = Points[Point + 1];
 
-		(NextPosition - Position).ToDirectionAndLength(Direction, Length);
-		Up = Direction.GetRotated(90.0f) * LocalHalfThickness;
+		(NextPosition - Position).ToDirectionAndLength(SegDirection, SegLength);
+		Up = SegDirection.GetRotated(90.0f) * LocalHalfThickness;
 
-		const FVector2f MiterNormal = GetMiterNormal(LastDirection, Direction);
+		const FVector2f MiterNormal = GetMiterNormal(LastDirection, SegDirection);
 		const float DistanceToMiterLine = FVector2f::DotProduct(Up, MiterNormal);
 
-		const float DirDotMiterNormal = FVector2f::DotProduct(Direction, MiterNormal);
-		const float MinSegmentLength = FMath::Min(LastLength, Length);
+		const float DirDotMiterNormal = FVector2f::DotProduct(SegDirection, MiterNormal);
+		const float MinSegmentLength = FMath::Min(LastLength, SegLength);
 
 		if (MinSegmentLength > SMALL_NUMBER && DirDotMiterNormal >= AngleCosineLimit && (MinSegmentLength * 0.5f * DirDotMiterNormal) >= FMath::Abs(DistanceToMiterLine))
 		{
 			const float ParallelDistance = DistanceToMiterLine / DirDotMiterNormal;
-			const FVector2f MiterUp = Up - (Direction * ParallelDistance);
+			const FVector2f MiterUp = Up - (SegDirection * ParallelDistance);
 
-			const float MiterOffset = FVector2f::DotProduct(Direction, MiterUp);
-			RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + MiterUp), FVector2f((PositionAlongLine - MiterOffset) / LineLength, 1.0f),
+			const float MiterOffset = FVector2f::DotProduct(SegDirection, MiterUp);
+			RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + MiterUp),
+			                                                 FVector2f((PositionAlongLine - MiterOffset) / LineLength, 1.0f),
 			                                                 FVector2f(PositionAlongLine - MiterOffset, 1.0f), PointColor, {}, Rounding));
-			RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position - MiterUp), FVector2f((PositionAlongLine + MiterOffset) / LineLength, 0.0f),
+			RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position - MiterUp),
+			                                                 FVector2f((PositionAlongLine + MiterOffset) / LineLength, 0.0f),
 			                                                 FVector2f(PositionAlongLine + MiterOffset, 0.0f), PointColor, {}, Rounding));
 			AddQuadIndices(RenderData);
 		}
 		else
 		{
 			MakeEndCap(Position, LastDirection, LastLength, LastUp, PointColor, Rounding);
-			MakeStartCap(Position, Direction, Length, Up, PointColor, Rounding);
+			MakeStartCap(Position, SegDirection, SegLength, Up, PointColor, Rounding);
 		}
 
-		PositionAlongLine += Length;
+		PositionAlongLine += SegLength;
 	}
 
-	MakeEndCap(NextPosition, Direction, Length, Up, PointColor, Rounding);
+	MakeEndCap(NextPosition, SegDirection, SegLength, Up, PointColor, Rounding);
 }
 
 void ILineDrawer::FLineBuilder::MakeStartCap(const FVector2f Position, const FVector2f Direction, float SegmentLength, const FVector2f Up, const FColor& Color, ESlateVertexRounding Rounding)
 {
 	if (SegmentLength > SMALL_NUMBER)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(ILineDrawer::FLineBuilder::MakeStartCap);
+
 		const float InwardDistance = FMath::Min(LocalFilterRadius, SegmentLength * 0.5f);
 		const float OutwardDistance = (InwardDistance - LocalCapLength);
 		const FVector2f CapInward = Direction * InwardDistance;
 		const FVector2f CapOutward = Direction * OutwardDistance;
 
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward + Up), FVector2f((PositionAlongLine + OutwardDistance) / LineLength, 1.0f), FVector2f(PositionAlongLine + OutwardDistance, 1.0f), Color, {}, Rounding));
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward - Up), FVector2f((PositionAlongLine + OutwardDistance) / LineLength, 0.0f), FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward + Up), FVector2f((PositionAlongLine + InwardDistance) / LineLength, 1.0f), FVector2f(PositionAlongLine + InwardDistance, 1.0f), Color, {}, Rounding));
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward - Up), FVector2f((PositionAlongLine + InwardDistance) / LineLength, 0.0f), FVector2f(PositionAlongLine + InwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward + Up),
+		                                                 FVector2f((PositionAlongLine + OutwardDistance) / LineLength, 1.0f),
+		                                                 FVector2f(PositionAlongLine + OutwardDistance, 1.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward - Up),
+		                                                 FVector2f((PositionAlongLine + OutwardDistance) / LineLength, 0.0f),
+		                                                 FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward + Up),
+		                                                 FVector2f((PositionAlongLine + InwardDistance) / LineLength, 1.0f),
+		                                                 FVector2f(PositionAlongLine + InwardDistance, 1.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward - Up),
+		                                                 FVector2f((PositionAlongLine + InwardDistance) / LineLength, 0.0f),
+		                                                 FVector2f(PositionAlongLine + InwardDistance, 0.0f), Color, {}, Rounding));
 		AddQuadIndices(RenderData);
 	}
 }
@@ -393,17 +408,27 @@ void ILineDrawer::FLineBuilder::MakeEndCap(const FVector2f Position, const FVect
 {
 	if (SegmentLength > SMALL_NUMBER)
 	{
+		TRACE_CPUPROFILER_EVENT_SCOPE(ILineDrawer::FLineBuilder::MakeEndCap);
+
 		const float InwardDistance = FMath::Min(LocalFilterRadius, SegmentLength * 0.5f);
 		const float OutwardDistance = (InwardDistance - LocalCapLength);
 		const FVector2f CapInward = Direction * -InwardDistance;
 		const FVector2f CapOutward = Direction * OutwardDistance;
 
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward + Up), FVector2f((PositionAlongLine - InwardDistance) / LineLength, 1.0f), FVector2f(PositionAlongLine - InwardDistance, 1.0f), Color, {}, Rounding));
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward - Up), FVector2f((PositionAlongLine - InwardDistance) / LineLength, 0.0f), FVector2f(PositionAlongLine - InwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward + Up),
+		                                                 FVector2f((PositionAlongLine - InwardDistance) / LineLength, 1.0f),
+		                                                 FVector2f(PositionAlongLine - InwardDistance, 1.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward - Up),
+		                                                 FVector2f((PositionAlongLine - InwardDistance) / LineLength, 0.0f),
+		                                                 FVector2f(PositionAlongLine - InwardDistance, 0.0f), Color, {}, Rounding));
 		AddQuadIndices(RenderData);
 
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward + Up), FVector2f((PositionAlongLine + OutwardDistance) / LineLength, 1.0f), FVector2f(PositionAlongLine + OutwardDistance, 1.0f), Color, {}, Rounding));
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward - Up), FVector2f((PositionAlongLine + OutwardDistance) / LineLength, 0.0f), FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward + Up),
+		                                                 FVector2f((PositionAlongLine + OutwardDistance) / LineLength, 1.0f),
+		                                                 FVector2f(PositionAlongLine + OutwardDistance, 1.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward - Up),
+		                                                 FVector2f((PositionAlongLine + OutwardDistance) / LineLength, 0.0f),
+		                                                 FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
 		AddQuadIndices(RenderData);
 	}
 }
