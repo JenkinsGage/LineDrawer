@@ -38,10 +38,10 @@ struct ADVANCEDLINEDRAWER_API FLineDescriptor
 	FInterpCurve<FVector2f> InterpCurve;
 
 	UPROPERTY(EditAnywhere)
-	float Thickness = 4.0f;
+	float Thickness = 2.0f;
 
 	UPROPERTY(EditAnywhere)
-	float Resolution = 4;
+	float Resolution = 6;
 
 	UPROPERTY(EditAnywhere)
 	float DynamicResolutionFactor = 1.0f;
@@ -91,6 +91,7 @@ private:
 	{
 		FLineDescriptor LineDescriptor;
 		bool bNeedReEvalInterpCurve = false;
+		float LineLength = 0.0f;
 		TArray<FVector2f> InterpCurveSamplePoints;
 
 		FRenderData RenderData;
@@ -101,7 +102,7 @@ private:
 
 	struct FLineBuilder
 	{
-		FLineBuilder(FRenderData& RenderData, const FSlateRenderTransform& RenderTransform, float ElementScale, float HalfThickness, float FilterRadius, float MiterAngleLimit);
+		FLineBuilder(FRenderData& RenderData, const FSlateRenderTransform& RenderTransform, float ElementScale, float HalfThickness, float FilterRadius, float MiterAngleLimit, float LineLength);
 
 		void BuildLineGeometry(const TArray<FVector2f>& Points, const FColor& PointColor, ESlateVertexRounding Rounding);
 		void MakeStartCap(const FVector2f Position, const FVector2f Direction, float SegmentLength, const FVector2f Up, const FColor& Color, ESlateVertexRounding Rounding);
@@ -117,6 +118,7 @@ private:
 		const float LocalFilterRadius;
 		const float LocalCapLength;
 		const float AngleCosineLimit;
-		float PositionAlongLine = 0.f;
+		float PositionAlongLine = 0.0f;
+		float LineLength = 0.0f;
 	};
 };

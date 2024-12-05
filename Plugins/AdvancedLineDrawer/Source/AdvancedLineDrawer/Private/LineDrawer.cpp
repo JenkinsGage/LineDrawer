@@ -31,6 +31,12 @@ void FLineDescriptor::SetCurvePointsWithAutoTangents(const TArray<FVector2f>& Po
 		if (Index < NumPoints - 1)
 		{
 			const FVector2f DeltaPos = Points[Index + 1] - CurrentPoint;
+			if (InterpMode == CIM_Linear)
+			{
+				InterpCurve.Points[Index] = FInterpCurvePoint(InterpT, CurrentPoint, NextArriveTangent, DeltaPos, InterpMode);
+				NextArriveTangent = -DeltaPos;
+				continue;
+			}
 			const float ClampedTensionX = FMath::Min<float>(FMath::Abs<float>(DeltaPos.X), TangentSettings.SplineHorizontalDeltaRange);
 			const float ClampedTensionY = FMath::Min<float>(FMath::Abs<float>(DeltaPos.Y), TangentSettings.SplineVerticalDeltaRange);
 			const FVector2f SplineTangent = (ClampedTensionX * TangentSettings.SplineTangentFromHorizontalDelta + ClampedTensionY * TangentSettings.SplineTangentFromVerticalDelta) * FVector2f(FMath::Sign(DeltaPos.X), FMath::Sign(DeltaPos.Y));
@@ -193,12 +199,12 @@ void ILineDrawer::UpdateLineRenderData(FLineData& InOutLineData, const FGeometry
 {
 	DECLARE_SCOPE_CYCLE_COUNTER(TEXT("UpdateLineRenderData"), STAT_LineDrawer_UpdateLineRenderData, STATGROUP_LineDrawer);
 
+	auto& LineDescriptor = InOutLineData.LineDescriptor;
 	if (InOutLineData.bNeedReEvalInterpCurve)
 	{
 		DECLARE_SCOPE_CYCLE_COUNTER(TEXT("EvalInterpCurve"), STAT_LineDrawer_EvalInterpCurve, STATGROUP_LineDrawer);
 
 		InOutLineData.InterpCurveSamplePoints.Reset();
-		auto& LineDescriptor = InOutLineData.LineDescriptor;
 		auto& KeyPoints = LineDescriptor.InterpCurve.Points;
 		if (KeyPoints.Num() > 0)
 		{
@@ -255,12 +261,20 @@ void ILineDrawer::UpdateLineRenderData(FLineData& InOutLineData, const FGeometry
 				EvalT = FMath::Min(EvalT + 1.0f / Resolution, LineDescriptor.InterpCurveEndT);
 			}
 
+			float LineLength = 0.0f;
+			FVector2f PrevPoint;
 			InOutLineData.InterpCurveSamplePoints.SetNumUninitialized(EvalTValues.Num());
 			for (int32 Index = 0; Index < EvalTValues.Num(); ++Index)
 			{
 				const FVector2f CurvePoint = LineDescriptor.InterpCurve.Eval(EvalTValues[Index]);
 				InOutLineData.InterpCurveSamplePoints[Index] = CurvePoint;
+				if (Index > 0)
+				{
+					LineLength += (CurvePoint - PrevPoint).Size();
+				}
+				PrevPoint = CurvePoint;
 			}
+			InOutLineData.LineLength = LineLength;
 		}
 
 		InOutLineData.bNeedReEvalInterpCurve = false;
@@ -281,19 +295,20 @@ void ILineDrawer::UpdateLineRenderData(FLineData& InOutLineData, const FGeometry
 		FPaintGeometry PaintGeometry = AllottedGeometry.ToPaintGeometry();
 		constexpr float AntiAliasingFilterRadius = 2.0f;
 		constexpr float MiterAngleLimit = 90.0f - KINDA_SMALL_NUMBER;
-		FLineBuilder LineBuilder(RenderData, PaintGeometry.GetAccumulatedRenderTransform(), PaintGeometry.DrawScale, InOutLineData.LineDescriptor.Thickness, AntiAliasingFilterRadius, MiterAngleLimit);
-		FColor TintColor = InOutLineData.LineDescriptor.Brush.TintColor.GetSpecifiedColor().ToFColor(true);
+		FLineBuilder LineBuilder(RenderData, PaintGeometry.GetAccumulatedRenderTransform(), PaintGeometry.DrawScale, LineDescriptor.Thickness, AntiAliasingFilterRadius, MiterAngleLimit, InOutLineData.LineLength);
+		FColor TintColor = LineDescriptor.Brush.TintColor.GetSpecifiedColor().ToFColor(true);
 		LineBuilder.BuildLineGeometry(InOutLineData.InterpCurveSamplePoints, TintColor, ESlateVertexRounding::Enabled);
 	}
 }
 
-ILineDrawer::FLineBuilder::FLineBuilder(FRenderData& RenderData, const FSlateRenderTransform& RenderTransform, float ElementScale, float HalfThickness, float FilterRadius, float MiterAngleLimit) :
+ILineDrawer::FLineBuilder::FLineBuilder(FRenderData& RenderData, const FSlateRenderTransform& RenderTransform, float ElementScale, float HalfThickness, float FilterRadius, float MiterAngleLimit, float LineLength) :
 	RenderData(RenderData),
 	RenderTransform(RenderTransform),
 	LocalHalfThickness((HalfThickness + FilterRadius) / ElementScale),
 	LocalFilterRadius(FilterRadius / ElementScale),
 	LocalCapLength((FilterRadius / ElementScale) * 2.0f),
-	AngleCosineLimit(FMath::DegreesToRadians((180.0f - MiterAngleLimit) * 0.5f))
+	AngleCosineLimit(FMath::DegreesToRadians((180.0f - MiterAngleLimit) * 0.5f)),
+	LineLength(LineLength)
 {
 }
 
@@ -339,9 +354,9 @@ void ILineDrawer::FLineBuilder::BuildLineGeometry(const TArray<FVector2f>& Point
 			const FVector2f MiterUp = Up - (Direction * ParallelDistance);
 
 			const float MiterOffset = FVector2f::DotProduct(Direction, MiterUp);
-			RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + MiterUp), FVector2f(1.0f, 0.0f),
-			                                                 FVector2f(PositionAlongLine - MiterOffset, 0.0f), PointColor, {}, Rounding));
-			RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position - MiterUp), FVector2f(-1.0f, 0.0f),
+			RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + MiterUp), FVector2f((PositionAlongLine - MiterOffset) / LineLength, 1.0f),
+			                                                 FVector2f(PositionAlongLine - MiterOffset, 1.0f), PointColor, {}, Rounding));
+			RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position - MiterUp), FVector2f((PositionAlongLine + MiterOffset) / LineLength, 0.0f),
 			                                                 FVector2f(PositionAlongLine + MiterOffset, 0.0f), PointColor, {}, Rounding));
 			AddQuadIndices(RenderData);
 		}
@@ -366,10 +381,10 @@ void ILineDrawer::FLineBuilder::MakeStartCap(const FVector2f Position, const FVe
 		const FVector2f CapInward = Direction * InwardDistance;
 		const FVector2f CapOutward = Direction * OutwardDistance;
 
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward + Up), FVector2f(1.0f, -1.0f), FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward - Up), FVector2f(-1.0f, -1.0f), FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward + Up), FVector2f(1.0f, 0.0f), FVector2f(PositionAlongLine + InwardDistance, 0.0f), Color, {}, Rounding));
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward - Up), FVector2f(-1.0f, 0.0f), FVector2f(PositionAlongLine + InwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward + Up), FVector2f((PositionAlongLine + OutwardDistance) / LineLength, 1.0f), FVector2f(PositionAlongLine + OutwardDistance, 1.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward - Up), FVector2f((PositionAlongLine + OutwardDistance) / LineLength, 0.0f), FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward + Up), FVector2f((PositionAlongLine + InwardDistance) / LineLength, 1.0f), FVector2f(PositionAlongLine + InwardDistance, 1.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward - Up), FVector2f((PositionAlongLine + InwardDistance) / LineLength, 0.0f), FVector2f(PositionAlongLine + InwardDistance, 0.0f), Color, {}, Rounding));
 		AddQuadIndices(RenderData);
 	}
 }
@@ -383,12 +398,12 @@ void ILineDrawer::FLineBuilder::MakeEndCap(const FVector2f Position, const FVect
 		const FVector2f CapInward = Direction * -InwardDistance;
 		const FVector2f CapOutward = Direction * OutwardDistance;
 
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward + Up), FVector2f(1.0f, 0.0f), FVector2f(PositionAlongLine - InwardDistance, 0.0f), Color, {}, Rounding));
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward - Up), FVector2f(-1.0f, 0.0f), FVector2f(PositionAlongLine - InwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward + Up), FVector2f((PositionAlongLine - InwardDistance) / LineLength, 1.0f), FVector2f(PositionAlongLine - InwardDistance, 1.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapInward - Up), FVector2f((PositionAlongLine - InwardDistance) / LineLength, 0.0f), FVector2f(PositionAlongLine - InwardDistance, 0.0f), Color, {}, Rounding));
 		AddQuadIndices(RenderData);
 
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward + Up), FVector2f(1.0f, 1.0f), FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
-		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward - Up), FVector2f(-1.0f, 1.0f), FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward + Up), FVector2f((PositionAlongLine + OutwardDistance) / LineLength, 1.0f), FVector2f(PositionAlongLine + OutwardDistance, 1.0f), Color, {}, Rounding));
+		RenderData.VertexData.Emplace(FSlateVertex::Make(RenderTransform, FVector2f(Position + CapOutward - Up), FVector2f((PositionAlongLine + OutwardDistance) / LineLength, 0.0f), FVector2f(PositionAlongLine + OutwardDistance, 0.0f), Color, {}, Rounding));
 		AddQuadIndices(RenderData);
 	}
 }
